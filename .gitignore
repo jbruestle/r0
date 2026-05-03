@@ -1,0 +1,11 @@
+/target
+
+# macOS
+.DS_Store
+
+# Editor / IDE
+*.rs.bk
+
+# Per-developer Claude Code settings (shared settings live in
+# .claude/settings.json, which IS committed if/when we add one)
+.claude/settings.local.json
