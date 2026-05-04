@@ -15,10 +15,10 @@ fn pow_field<P: MontyParameters>(mut base: MontyField<P>, mut exp: u32) -> Monty
     acc
 }
 
-/// Build a flat forward-twiddle table `[ω^0, ω^1, …, ω^(N/2 − 1)]` in
-/// Montgomery form, where `ω` is a primitive `N`-th root of unity
+/// Build a flat forward-twiddle table `[w^0, w^1, ..., w^(N/2 - 1)]` in
+/// Montgomery form, where `w` is a primitive `N`-th root of unity
 /// (`N = 2^log_n`). For `log_n == 0` returns an empty vector.
-pub fn build_twiddles<P: MontyParameters>(log_n: u32) -> Vec<u32> {
+pub fn build_fwd_twiddles<P: MontyParameters>(log_n: u32) -> Vec<u32> {
     if log_n == 0 {
         return Vec::new();
     }
@@ -33,7 +33,7 @@ pub fn build_twiddles<P: MontyParameters>(log_n: u32) -> Vec<u32> {
     out
 }
 
-/// Build a flat inverse-twiddle table `[ω^{-0}, ω^{-1}, …, ω^{-(N/2−1)}]`
+/// Build a flat inverse-twiddle table `[w^{-0}, w^{-1}, ..., w^{-(N/2-1)}]`
 /// in Montgomery form. Used by the GS-DIF inverse kernel.
 pub fn build_inv_twiddles<P: MontyParameters>(log_n: u32) -> Vec<u32> {
     if log_n == 0 {
@@ -41,7 +41,7 @@ pub fn build_inv_twiddles<P: MontyParameters>(log_n: u32) -> Vec<u32> {
     }
     let half = 1usize << (log_n - 1);
     let omega = MontyField::<P>::from_canonical(P::TWO_ADIC_GENERATORS[log_n as usize]);
-    // ω^{-1} = ω^{N - 1} since ω^N = 1.
+    // w^{-1} = w^{N - 1} since w^N = 1.
     let inv_omega = pow_field::<P>(omega, (1u32 << log_n) - 1);
     let mut out = Vec::with_capacity(half);
     let mut current = MontyField::<P>::from_canonical(1);
@@ -85,7 +85,6 @@ mod tests {
 
     #[test]
     fn twiddles_omega_n_is_one() {
-        // Repeated squaring: omega^(2^log_n) = omega^N = 1.
         for log_n in 1..=10u32 {
             let omega = MontyField::<BabyBearParameters>::from_canonical(
                 BabyBearParameters::TWO_ADIC_GENERATORS[log_n as usize],
@@ -97,16 +96,16 @@ mod tests {
             assert_eq!(
                 x,
                 MontyField::<BabyBearParameters>::from_canonical(1),
-                "ω^N != 1 for log_n = {log_n}"
+                "w^N != 1 for log_n = {log_n}"
             );
         }
     }
 
     #[test]
     fn twiddles_first_two_correct() {
-        // tw[0] = 1; tw[1] = ω.
+        // tw[0] = 1; tw[1] = w.
         for log_n in 1..=10u32 {
-            let tw = build_twiddles::<BabyBearParameters>(log_n);
+            let tw = build_fwd_twiddles::<BabyBearParameters>(log_n);
             let one = MontyField::<BabyBearParameters>::from_canonical(1);
             assert_eq!(MontyField::<BabyBearParameters>::from_raw(tw[0]), one);
             if tw.len() >= 2 {

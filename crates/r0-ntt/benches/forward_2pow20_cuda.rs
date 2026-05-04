@@ -8,7 +8,7 @@ use cubecl::cuda::CudaRuntime;
 use cubecl::prelude::*;
 
 use r0_field::{BabyBearParameters, MontyField, MontyParameters};
-use r0_ntt::{bit_reverse_in_place, build_twiddles, ntt_pass};
+use r0_ntt::{bit_reverse_in_place, build_fwd_twiddles, ntt_fwd_pass};
 
 fn forward_ntt(c: &mut Criterion) {
     type P = BabyBearParameters;
@@ -33,7 +33,7 @@ fn forward_ntt(c: &mut Criterion) {
         .collect();
     bit_reverse_in_place(&mut input_field);
     let input_raw: Vec<u32> = input_field.iter().map(|f| f.raw()).collect();
-    let twiddles = build_twiddles::<P>(LOG_N);
+    let twiddles = build_fwd_twiddles::<P>(LOG_N);
 
     let device = <R as Runtime>::Device::default();
     let client = R::client(&device);
@@ -48,7 +48,7 @@ fn forward_ntt(c: &mut Criterion) {
         b.iter(|| {
             unsafe {
                 // Pass 1: buf_a → buf_b (transposed)
-                ntt_pass::launch_unchecked::<P, R>(
+                ntt_fwd_pass::launch_unchecked::<P, R>(
                     &client,
                     CubeCount::Static((n2 / Z as usize) as u32, 1, 1),
                     CubeDim::new_1d(1u32 << LOG_WG),
@@ -61,10 +61,10 @@ fn forward_ntt(c: &mut Criterion) {
                     LOG_WG,
                     Z,
                 )
-                .expect("ntt_pass (first) failed");
+                .expect("ntt_fwd_pass (first) failed");
 
                 // Pass 2: buf_b → buf_b (final, in-place)
-                ntt_pass::launch_unchecked::<P, R>(
+                ntt_fwd_pass::launch_unchecked::<P, R>(
                     &client,
                     CubeCount::Static((n1 / Z as usize) as u32, 1, 1),
                     CubeDim::new_1d(1u32 << LOG_WG),
@@ -77,7 +77,7 @@ fn forward_ntt(c: &mut Criterion) {
                     LOG_WG,
                     Z,
                 )
-                .expect("ntt_pass (second) failed");
+                .expect("ntt_fwd_pass (second) failed");
             }
 
             cubecl_common::reader::read_sync(client.sync()).expect("sync failed");

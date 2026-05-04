@@ -5,7 +5,7 @@ use cubecl::cuda::CudaRuntime;
 use cubecl::prelude::*;
 
 use r0_field::{BabyBearParameters, MontyField, MontyParameters};
-use r0_ntt::{bit_reverse_in_place, build_twiddles, ntt_pass};
+use r0_ntt::{bit_reverse_in_place, build_fwd_twiddles, ntt_fwd_pass};
 
 fn forward_ntt_batched(c: &mut Criterion) {
     type P = BabyBearParameters;
@@ -37,7 +37,7 @@ fn forward_ntt_batched(c: &mut Criterion) {
         all_raw.extend_from_slice(&one_poly);
     }
 
-    let twiddles = build_twiddles::<P>(LOG_N);
+    let twiddles = build_fwd_twiddles::<P>(LOG_N);
 
     let device = <R as Runtime>::Device::default();
     let client = R::client(&device);
@@ -51,7 +51,7 @@ fn forward_ntt_batched(c: &mut Criterion) {
     group.bench_function("forward_batched", |b| {
         b.iter(|| {
             unsafe {
-                ntt_pass::launch_unchecked::<P, R>(
+                ntt_fwd_pass::launch_unchecked::<P, R>(
                     &client,
                     CubeCount::Static((n2 / Z as usize) as u32, BATCH as u32, 1),
                     CubeDim::new_1d(1u32 << LOG_WG),
@@ -64,9 +64,9 @@ fn forward_ntt_batched(c: &mut Criterion) {
                     LOG_WG,
                     Z,
                 )
-                .expect("ntt_pass (first) failed");
+                .expect("ntt_fwd_pass (first) failed");
 
-                ntt_pass::launch_unchecked::<P, R>(
+                ntt_fwd_pass::launch_unchecked::<P, R>(
                     &client,
                     CubeCount::Static((n1 / Z as usize) as u32, BATCH as u32, 1),
                     CubeDim::new_1d(1u32 << LOG_WG),
@@ -79,7 +79,7 @@ fn forward_ntt_batched(c: &mut Criterion) {
                     LOG_WG,
                     Z,
                 )
-                .expect("ntt_pass (second) failed");
+                .expect("ntt_fwd_pass (second) failed");
             }
 
             cubecl_common::reader::read_sync(client.sync()).expect("sync failed");

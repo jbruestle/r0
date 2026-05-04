@@ -1,5 +1,5 @@
-//! Plonky3 oracle tests for forward NTT (`ntt_pass`) and inverse NTT
-//! (`intt_pass`).
+//! Plonky3 oracle tests for forward NTT (`ntt_fwd_pass`) and inverse NTT
+//! (`ntt_inv_pass`).
 
 use cubecl::cpu::CpuRuntime;
 use cubecl::prelude::*;
@@ -10,7 +10,7 @@ use p3_field::{PrimeField32, TwoAdicField};
 
 use r0_field::{BabyBearParameters, KoalaBearParameters, MontyField, MontyParameters};
 use r0_ntt::{
-    bit_reverse_in_place, build_inv_twiddles, build_twiddles, intt_pass, n_inv, ntt_pass,
+    bit_reverse_in_place, build_inv_twiddles, build_fwd_twiddles, ntt_inv_pass, n_inv, ntt_fwd_pass,
 };
 
 trait FieldBridge: MontyParameters {
@@ -39,7 +39,7 @@ fn pick_log_wg(log_pass_size: u32) -> u32 {
     log_pass_size.saturating_sub(1).min(8)
 }
 
-// ---- Forward runner (unified ntt_pass, separate in/out buffers) ----
+// ---- Forward runner (unified ntt_fwd_pass, separate in/out buffers) ----
 
 fn run_forward<P: MontyParameters, R: Runtime>(
     device: &R::Device,
@@ -65,8 +65,8 @@ fn run_forward<P: MontyParameters, R: Runtime>(
     let log_wg2 = pick_log_wg(log_n2);
 
     unsafe {
-        // Pass 1: buf_a → buf_b (transposed, since non-final)
-        ntt_pass::launch_unchecked::<P, R>(
+        // Pass 1: buf_a -> buf_b (transposed, since non-final)
+        ntt_fwd_pass::launch_unchecked::<P, R>(
             &client,
             CubeCount::Static(n2 as u32, 1, 1),
             CubeDim::new_1d(1u32 << log_wg1),
@@ -79,10 +79,10 @@ fn run_forward<P: MontyParameters, R: Runtime>(
             log_wg1,
             1u32,
         )
-        .expect("ntt_pass (first) failed");
+        .expect("ntt_fwd_pass (first) failed");
 
-        // Pass 2: buf_b → buf_b (final, in-place safe)
-        ntt_pass::launch_unchecked::<P, R>(
+        // Pass 2: buf_b -> buf_b (final, in-place safe)
+        ntt_fwd_pass::launch_unchecked::<P, R>(
             &client,
             CubeCount::Static(n1 as u32, 1, 1),
             CubeDim::new_1d(1u32 << log_wg2),
@@ -95,7 +95,7 @@ fn run_forward<P: MontyParameters, R: Runtime>(
             log_wg2,
             1u32,
         )
-        .expect("ntt_pass (second) failed");
+        .expect("ntt_fwd_pass (second) failed");
     }
 
     let bytes = client.read_one(buf_b);
@@ -112,7 +112,7 @@ fn run_forward<P: MontyParameters, R: Runtime>(
     natural
 }
 
-// ---- Inverse runner (unified intt_pass, separate in/out buffers) ----
+// ---- Inverse runner (unified ntt_inv_pass, separate in/out buffers) ----
 
 fn run_inverse<P: MontyParameters, R: Runtime>(
     device: &R::Device,
@@ -147,10 +147,10 @@ fn run_inverse<P: MontyParameters, R: Runtime>(
     let log_wg1 = pick_log_wg(log_n2);
     let log_wg2 = pick_log_wg(log_n1);
 
-    // Inverse pass 1: high-stride stages (descending), N⁻¹ pre-mult.
-    // buf_a → buf_b (transposed for pass 2).
+    // Inverse pass 1: high-stride stages (descending), N^{-1} pre-mult.
+    // buf_a -> buf_b (transposed for pass 2).
     unsafe {
-        intt_pass::launch_unchecked::<P, R>(
+        ntt_inv_pass::launch_unchecked::<P, R>(
             &client,
             CubeCount::Static(n1 as u32, 1, 1),
             CubeDim::new_1d(1u32 << log_wg1),
@@ -164,11 +164,11 @@ fn run_inverse<P: MontyParameters, R: Runtime>(
             log_wg1,
             1u32,
         )
-        .expect("intt_pass (first) failed");
+        .expect("ntt_inv_pass (first) failed");
 
         // Inverse pass 2: low-stride stages (descending).
-        // buf_b → buf_b (final, in-place safe).
-        intt_pass::launch_unchecked::<P, R>(
+        // buf_b -> buf_b (final, in-place safe).
+        ntt_inv_pass::launch_unchecked::<P, R>(
             &client,
             CubeCount::Static(n2 as u32, 1, 1),
             CubeDim::new_1d(1u32 << log_wg2),
@@ -182,34 +182,34 @@ fn run_inverse<P: MontyParameters, R: Runtime>(
             log_wg2,
             1u32,
         )
-        .expect("intt_pass (second) failed");
+        .expect("ntt_inv_pass (second) failed");
     }
 
     let bytes = client.read_one(buf_b);
     let raw_out = u32::from_bytes(&bytes).to_vec();
 
     // The output is in [N2][N1] transposed layout (pass 1 transposes
-    // [N1 slabs of N2] → [N2][N1], pass 2 operates in-place within
+    // [N1 slabs of N2] -> [N2][N1], pass 2 operates in-place within
     // [N2][N1]). Un-transpose to recover natural order.
     //
     // Pass 1: N_pass=N2, N_other=N1.
     //   Transposed store: output[local_idx * N1 + chunk_id]
-    //   where chunk_id ∈ [0, N1), local_idx ∈ [0, N2).
+    //   where chunk_id  in  [0, N1), local_idx  in  [0, N2).
     //   Layout: [N2][N1] (N2 rows of N1 columns).
     //
     // Pass 2: N_pass=N1, reads from [N2][N1] contiguously.
     //   Workgroup wg reads row wg: [wg*N1, (wg+1)*N1).
-    //   Final pass stores in-place → stays [N2][N1].
+    //   Final pass stores in-place -> stays [N2][N1].
     //
     // To recover natural order:
-    //   natural[row * N1 + col] where row ∈ [0, N2), col ∈ [0, N1)
+    //   natural[row * N1 + col] where row  in  [0, N2), col  in  [0, N1)
     //   corresponds to the original slab element:
-    //     slab i_low=col, position j=row → original position col + row * N1
+    //     slab i_low=col, position j=row -> original position col + row * N1
     //   So: natural[col + row * N1] = raw_out[row * N1 + col]
     // Which is just: natural[i] = raw_out[(i/N1)*N1 + (i%N1)]... that's identity!
     //
-    // Wait — that means the [N2][N1] layout IS natural order when
-    // viewed as a flat array?! No — [N2][N1] means N2 groups of N1.
+    // Wait  --  that means the [N2][N1] layout IS natural order when
+    // viewed as a flat array?! No  --  [N2][N1] means N2 groups of N1.
     // Position p = row * N1 + col. Natural position = col + row * N1
     // = row * N1 + col = p. It IS the identity for the flat layout!
     //
@@ -242,7 +242,7 @@ where
         .collect();
     bit_reverse_in_place(&mut our_in_field);
     let our_in_raw: Vec<u32> = our_in_field.iter().map(|f| f.raw()).collect();
-    let twiddles = build_twiddles::<P>(log_n);
+    let twiddles = build_fwd_twiddles::<P>(log_n);
 
     let kernel_out_raw =
         run_forward::<P, R>(&Default::default(), &our_in_raw, &twiddles, log_n);

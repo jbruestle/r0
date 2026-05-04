@@ -1,8 +1,8 @@
 //! Unified inverse-NTT pass kernel.
 //!
-//! Mirrors `pass.rs` (forward) but uses GS-DIF butterflies with
-//! descending stride and inverse twiddles. The N⁻¹ scaling is applied
-//! at load time on the first pass (stage_offset == 0).
+//! Mirrors `fwd_pass.rs` (forward) but uses GS-DIF butterflies with
+//! descending stride and inverse twiddles. The N^{-1} scaling is
+//! applied at load time on the first pass (stage_offset == 0).
 //!
 //! The twiddle wg_pos logic is REVERSED relative to the forward:
 //! - First inverse pass (stage_offset == 0): wg_pos contributes
@@ -20,13 +20,13 @@ use r0_field::{monty_add, monty_mul, monty_sub, MontyParameters};
 /// - `input`: source buffer (read-only for this pass).
 /// - `output`: destination buffer. Must be separate from `input` for
 ///   non-final passes (transposed store). May alias for the final pass.
-/// - `inv_twiddles`: inverse twiddle table (ω⁻¹ powers).
-/// - `inv_n`: single-element buffer holding N⁻¹ in Montgomery form.
+/// - `inv_twiddles`: inverse twiddle table (w^{-1} powers).
+/// - `inv_n`: single-element buffer holding N^{-1} in Montgomery form.
 ///   Only used when `stage_offset == 0`.
 /// - `log_n`, `log_pass`, `stage_offset`, `log_wg`, `z_count`: same
-///   semantics as `ntt_pass`.
+///   semantics as `ntt_fwd_pass`.
 #[cube(launch_unchecked)]
-pub fn intt_pass<P: MontyParameters>(
+pub fn ntt_inv_pass<P: MontyParameters>(
     input: &Array<u32>,
     output: &mut Array<u32>,
     inv_twiddles: &Array<u32>,
@@ -52,9 +52,9 @@ pub fn intt_pass<P: MontyParameters>(
     let mut shared = SharedMemory::<u32>::new(z * n_pass);
     let tid = UNIT_POS as usize;
 
-    // ── Load ────────────���───────────────────────────────────────────
+    // -- Load ----------------------------------------------------------
     //
-    // First pass pre-multiplies by N⁻¹ (folding the scaling into the
+    // First pass pre-multiplies by N^{-1} (folding the scaling into the
     // load to avoid a separate pass).
     if comptime!(is_first_pass) {
         let n_inv_value = inv_n[0];
@@ -81,7 +81,7 @@ pub fn intt_pass<P: MontyParameters>(
     }
     sync_cube();
 
-    // ── Butterfly stages (GS-DIF, descending stride) ───���────────────
+    // -- Butterfly stages (GS-DIF, descending stride) ------------------
     //
     // At pass-local stage s, stride = 2^(log_pass - 1 - s) (descending).
     #[unroll]
@@ -128,7 +128,7 @@ pub fn intt_pass<P: MontyParameters>(
                 let base = zi * n_pass;
                 let a = shared[base + i_lo];
                 let b = shared[base + i_hi];
-                // GS-DIF: (a, b, ω) → (a + b, (a − b) · ω)
+                // GS-DIF: (a, b, w) -> (a + b, (a - b) * w)
                 let sum = monty_add::<P>(a, b);
                 let diff = monty_sub::<P>(a, b);
                 let dt = monty_mul::<P>(diff, tw);
@@ -139,7 +139,7 @@ pub fn intt_pass<P: MontyParameters>(
         sync_cube();
     }
 
-    // ── Store ─────────────────────────────��───────────────────────���─
+    // -- Store ---------------------------------------------------------
     if comptime!(transpose_out) {
         let stores_per_thread = comptime!((z_count as usize) * (1usize << (log_pass - log_wg)));
         let z_mask = comptime!((z_count as usize) - 1);

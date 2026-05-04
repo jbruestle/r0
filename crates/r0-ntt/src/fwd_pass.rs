@@ -31,7 +31,7 @@ use r0_field::{monty_add, monty_mul, monty_sub, MontyParameters};
 /// - `log_wg`: workgroup size exponent (wg_size = 2^log_wg).
 /// - `z_count`: chunks per workgroup (shared mem = z_count * N_pass).
 #[cube(launch_unchecked)]
-pub fn ntt_pass<P: MontyParameters>(
+pub fn ntt_fwd_pass<P: MontyParameters>(
     input: &Array<u32>,
     output: &mut Array<u32>,
     twiddles: &Array<u32>,
@@ -55,7 +55,7 @@ pub fn ntt_pass<P: MontyParameters>(
     let mut shared = SharedMemory::<u32>::new(z * n_pass);
     let tid = UNIT_POS as usize;
 
-    // ── Load ────────────────────────────────────────────────────────
+    // -- Load ----------------------------------------------------------
     //
     // All passes load contiguously from `input`. First pass reads from
     // the original layout; subsequent passes read from the transposed
@@ -71,7 +71,7 @@ pub fn ntt_pass<P: MontyParameters>(
     }
     sync_cube();
 
-    // ── Butterfly stages ────────────────────────────────────────────
+    // -- Butterfly stages ----------------------------------------------
     #[unroll]
     for s in 0..log_pass {
         let d = comptime!(1usize << s);
@@ -110,11 +110,11 @@ pub fn ntt_pass<P: MontyParameters>(
         sync_cube();
     }
 
-    // ── Store ───────────────────────────────────────────────────────
+    // -- Store ---------------------------------------------------------
     if comptime!(transpose_out) {
         // Non-final pass: tiled transposed store into `output`.
         //
-        // Remap thread→element so Z adjacent threads write to Z
+        // Remap thread->element so Z adjacent threads write to Z
         // adjacent global addresses:
         //   flat = L * Z + zi  (assigned round-robin across threads)
         // Within a 32-thread warp, groups of Z write consecutively.

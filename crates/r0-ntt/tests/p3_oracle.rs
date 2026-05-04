@@ -1,6 +1,6 @@
-//! Plonky3 oracle for single-pass NTT (log_n ≤ 10).
+//! Plonky3 oracle for single-pass NTT (log_n <= 10).
 //!
-//! Uses the unified `ntt_pass` / `intt_pass` kernels with a single
+//! Uses the unified `ntt_fwd_pass` / `ntt_inv_pass` kernels with a single
 //! pass (stage_offset=0, log_pass=log_n) which is the final pass
 //! (no transpose, in-place safe).
 
@@ -12,7 +12,7 @@ use p3_dft::{Radix2Dit, TwoAdicSubgroupDft};
 use p3_field::{PrimeField32, TwoAdicField};
 
 use r0_field::{BabyBearParameters, KoalaBearParameters, MontyField, MontyParameters};
-use r0_ntt::{bit_reverse_in_place, build_inv_twiddles, build_twiddles, intt_pass, n_inv, ntt_pass};
+use r0_ntt::{bit_reverse_in_place, build_inv_twiddles, build_fwd_twiddles, ntt_inv_pass, n_inv, ntt_fwd_pass};
 
 fn pick_log_wg(log_n: u32) -> u32 {
     log_n.saturating_sub(1).min(8)
@@ -48,9 +48,9 @@ fn run_ntt<P: MontyParameters, R: Runtime>(
     let data_h = client.create_from_slice(u32::as_bytes(bitrev_coeffs_raw));
     let tw_h = client.create_from_slice(u32::as_bytes(twiddles_raw));
 
-    // Single pass: stage_offset=0, log_pass=log_n → final pass, in-place.
+    // Single pass: stage_offset=0, log_pass=log_n -> final pass, in-place.
     unsafe {
-        ntt_pass::launch_unchecked::<P, R>(
+        ntt_fwd_pass::launch_unchecked::<P, R>(
             &client,
             CubeCount::Static(1, 1, 1),
             CubeDim::new_1d(1u32 << log_wg),
@@ -63,7 +63,7 @@ fn run_ntt<P: MontyParameters, R: Runtime>(
             log_wg,
             1u32,
         )
-        .expect("ntt_pass launch failed");
+        .expect("ntt_fwd_pass launch failed");
     }
 
     let bytes = client.read_one(data_h);
@@ -84,9 +84,9 @@ fn run_intt<P: MontyParameters, R: Runtime>(
     let tw_h = client.create_from_slice(u32::as_bytes(inv_twiddles_raw));
     let inv_n_h = client.create_from_slice(u32::as_bytes(&[inv_n_raw]));
 
-    // Single pass: stage_offset=0, log_pass=log_n → final pass, in-place.
+    // Single pass: stage_offset=0, log_pass=log_n -> final pass, in-place.
     unsafe {
-        intt_pass::launch_unchecked::<P, R>(
+        ntt_inv_pass::launch_unchecked::<P, R>(
             &client,
             CubeCount::Static(1, 1, 1),
             CubeDim::new_1d(1u32 << log_wg),
@@ -100,7 +100,7 @@ fn run_intt<P: MontyParameters, R: Runtime>(
             log_wg,
             1u32,
         )
-        .expect("intt_pass launch failed");
+        .expect("ntt_inv_pass launch failed");
     }
 
     let bytes = client.read_one(data_h);
@@ -127,7 +127,7 @@ where
         .collect();
     bit_reverse_in_place(&mut our_in_field);
     let our_in_raw: Vec<u32> = our_in_field.iter().map(|f| f.raw()).collect();
-    let twiddles = build_twiddles::<P>(log_n);
+    let twiddles = build_fwd_twiddles::<P>(log_n);
 
     let actual_raw = run_ntt::<P, R>(&Default::default(), &our_in_raw, &twiddles, log_n);
     let actual: Vec<u32> = actual_raw
@@ -191,7 +191,7 @@ where
         .map(|&v| MontyField::<P>::from_canonical(v).raw())
         .collect();
 
-    let twiddles = build_twiddles::<P>(log_n);
+    let twiddles = build_fwd_twiddles::<P>(log_n);
     let inv_twiddles = build_inv_twiddles::<P>(log_n);
     let inv_n = n_inv::<P>(log_n);
 
