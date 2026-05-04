@@ -13,6 +13,31 @@
 use cubecl::prelude::*;
 use r0_field::{monty_add, monty_mul, monty_sub, MontyParameters};
 
+/// Reconstruct a twiddle factor w^k from the windowed partial twiddle table.
+#[cube]
+fn reconstruct_twiddle<P: MontyParameters>(
+    partial_twiddles: &Array<u32>,
+    k: u32,
+    #[comptime] num_windows: u32,
+) -> u32 {
+    let lg_window = comptime!(6u32);
+    let window_mask = comptime!((1u32 << 6) - 1);
+    let window_size = comptime!(64usize);
+
+    let mut acc = partial_twiddles[0usize]; // monty(1)
+
+    #[unroll]
+    for w in 0..num_windows {
+        let k_w = (k >> (w * lg_window)) & window_mask;
+        let idx = comptime!(w as usize) * window_size + k_w as usize;
+        let entry = partial_twiddles[idx];
+        if k_w != 0u32 {
+            acc = monty_mul::<P>(acc, entry);
+        }
+    }
+    acc
+}
+
 /// Single inverse-NTT pass: GS-DIF butterflies for `log_pass` stages
 /// starting at global inverse stage `stage_offset`, with descending
 /// stride.
@@ -20,7 +45,8 @@ use r0_field::{monty_add, monty_mul, monty_sub, MontyParameters};
 /// - `input`: source buffer (read-only for this pass).
 /// - `output`: destination buffer. Must be separate from `input` for
 ///   non-final passes (transposed store). May alias for the final pass.
-/// - `inv_twiddles`: inverse twiddle table (w^{-1} powers).
+/// - `partial_twiddles`: windowed inverse twiddle table (320 entries).
+///   Built by `build_partial_inv_twiddles`.
 /// - `inv_n`: single-element buffer holding N^{-1} in Montgomery form.
 ///   Only used when `stage_offset == 0`.
 /// - `log_n`, `log_pass`, `stage_offset`, `log_wg`, `z_count`: same
@@ -29,7 +55,7 @@ use r0_field::{monty_add, monty_mul, monty_sub, MontyParameters};
 pub fn ntt_inv_pass<P: MontyParameters>(
     input: &Array<u32>,
     output: &mut Array<u32>,
-    inv_twiddles: &Array<u32>,
+    partial_twiddles: &Array<u32>,
     inv_n: &Array<u32>,
     #[comptime] log_n: u32,
     #[comptime] log_pass: u32,
@@ -47,15 +73,15 @@ pub fn ntt_inv_pass<P: MontyParameters>(
     let transpose_out = comptime!(stage_offset + log_pass < log_n);
     let is_first_pass = comptime!(stage_offset == 0);
 
+    let log_remaining = comptime!(log_n - stage_offset - log_pass);
+    let num_windows = comptime!(5u32);
+
     let super_block = CUBE_POS_X as usize;
     let batch_offset = CUBE_POS_Y as usize * n;
     let mut shared = SharedMemory::<u32>::new(z * n_pass);
     let tid = UNIT_POS as usize;
 
     // -- Load ----------------------------------------------------------
-    //
-    // First pass pre-multiplies by N^{-1} (folding the scaling into the
-    // load to avoid a separate pass).
     if comptime!(is_first_pass) {
         let n_inv_value = inv_n[0];
         #[unroll]
@@ -82,8 +108,6 @@ pub fn ntt_inv_pass<P: MontyParameters>(
     sync_cube();
 
     // -- Butterfly stages (GS-DIF, descending stride) ------------------
-    //
-    // At pass-local stage s, stride = 2^(log_pass - 1 - s) (descending).
     #[unroll]
     for s in 0..log_pass {
         let log_d = comptime!(log_pass - 1 - s);
@@ -91,21 +115,29 @@ pub fn ntt_inv_pass<P: MontyParameters>(
         let mask_d = comptime!((1usize << (log_pass - 1 - s)) - 1);
         let log_two_d = comptime!(log_pass - s);
 
-        // Twiddle: inv_twiddles[j_global * 2^(stage_offset + s)]
+        // Twiddle exponent for GS-DIF inverse:
+        // For the first pass (stage_offset == 0, high-stride stages):
+        //   inner_step = 2^(log_n - log_pass + s)
+        //   outer_step = 2^s
+        //   exp = effective_wg * outer_step + j * inner_step
         //
-        // For the first pass (stage_offset == 0):
-        //   j_global = wg_pos + j * N_other
-        //   tw = inv_twiddles[wg_pos * 2^s + j * 2^(log_n - log_pass + s)]
-        //
-        // For the last pass (stage_offset + log_pass == log_n):
-        //   j_global = j (chunk base is a multiple of d_global)
-        //   tw = inv_twiddles[j * 2^(stage_offset + s)]
+        // For non-first passes (low-stride stages):
+        //   inner_step = 2^(stage_offset + s)
+        //   exp = j * inner_step (no wg contribution for the final pass)
+        //   For middle passes: exp = effective_wg * outer_step + j * inner_step
         let inner_step = comptime!(if stage_offset == 0 {
-            1usize << (log_n - log_pass + s)
+            1u32 << (log_n - log_pass + s)
         } else {
-            1usize << (stage_offset + s)
+            1u32 << (stage_offset + s)
         });
-        let outer_step = comptime!(1usize << s);
+        let outer_step = comptime!(if stage_offset == 0 {
+            1u32 << s
+        } else {
+            // For non-first passes, outer_step provides wg contribution.
+            // For the FINAL pass (log_remaining=0), this is unused.
+            // For MIDDLE passes, we need: wg_pos >> log_remaining * outer_step.
+            1u32 << (stage_offset + s)
+        });
 
         #[unroll]
         for k in 0..butt_per_thread {
@@ -114,16 +146,27 @@ pub fn ntt_inv_pass<P: MontyParameters>(
             let j = butt_idx & mask_d;
             let i_lo = (group << log_two_d) | j;
             let i_hi = i_lo + d;
-            let j_inner = j * inner_step;
+            let j_inner = j as u32 * inner_step;
 
             #[unroll]
             for zi in 0..z {
-                let tw = if comptime!(is_first_pass) {
-                    let wg_pos = super_block * z + zi;
-                    inv_twiddles[wg_pos * outer_step + j_inner]
+                let tw_exp = if comptime!(is_first_pass) {
+                    // First inverse pass: data in original order, wg
+                    // contributes directly (no prior transpose).
+                    let wg_pos = (super_block * z + zi) as u32;
+                    wg_pos * outer_step + j_inner
+                } else if comptime!(stage_offset + log_pass == log_n) {
+                    // Final inverse pass: no wg contribution.
+                    j_inner
                 } else {
-                    inv_twiddles[j_inner]
+                    // Middle inverse pass: wg shifted by log_remaining
+                    // to account for prior transposes.
+                    let wg_pos = (super_block * z + zi) as u32;
+                    let effective_wg = wg_pos >> log_remaining;
+                    effective_wg * outer_step + j_inner
                 };
+
+                let tw = reconstruct_twiddle::<P>(partial_twiddles, tw_exp, num_windows);
 
                 let base = zi * n_pass;
                 let a = shared[base + i_lo];

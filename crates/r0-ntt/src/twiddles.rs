@@ -61,6 +61,65 @@ pub fn n_inv<P: MontyParameters>(log_n: u32) -> u32 {
     pow_field::<P>(n_field, P::PRIME - 2).raw()
 }
 
+// -- Windowed partial twiddle tables --
+//
+// Instead of storing N/2 twiddle factors (2MB for log_n=20), we store a
+// small partial table of NUM_WINDOWS * WINDOW_SIZE entries and reconstruct
+// any w^k on-the-fly via at most NUM_WINDOWS-1 multiplications.
+//
+// Layout: flat [window_0[0..64], window_1[0..64], ..., window_4[0..64]]
+// partial[w][i] = omega^(i * 2^(w * LG_WINDOW))
+
+/// Window size exponent for partial twiddle tables.
+pub const LG_WINDOW: u32 = 6;
+/// Window size (number of entries per window).
+pub const WINDOW_SIZE: usize = 1 << LG_WINDOW; // 64
+/// Number of windows. Covers up to 30 bits of exponent (sufficient for
+/// BabyBear S=27 and KoalaBear S=24).
+pub const NUM_WINDOWS: usize = 5;
+/// Total number of entries in a partial twiddle table.
+pub const PARTIAL_TWIDDLE_LEN: usize = NUM_WINDOWS * WINDOW_SIZE; // 320
+
+/// Build a forward partial twiddle table for the given `log_n`.
+///
+/// Returns a flat `Vec<u32>` of length `NUM_WINDOWS * WINDOW_SIZE` (320).
+/// Entry `[w * WINDOW_SIZE + i]` = omega^(i * 2^(w * LG_WINDOW)) in
+/// Montgomery form, where omega is a primitive 2^log_n-th root of unity.
+pub fn build_partial_fwd_twiddles<P: MontyParameters>(log_n: u32) -> Vec<u32> {
+    assert!(log_n >= 1);
+    let omega = MontyField::<P>::from_canonical(P::TWO_ADIC_GENERATORS[log_n as usize]);
+    build_partial_table::<P>(omega, log_n)
+}
+
+/// Build an inverse partial twiddle table for the given `log_n`.
+///
+/// Same layout as forward, but uses omega^{-1} as the base root.
+pub fn build_partial_inv_twiddles<P: MontyParameters>(log_n: u32) -> Vec<u32> {
+    assert!(log_n >= 1);
+    let omega = MontyField::<P>::from_canonical(P::TWO_ADIC_GENERATORS[log_n as usize]);
+    let inv_omega = pow_field::<P>(omega, (1u32 << log_n) - 1);
+    build_partial_table::<P>(inv_omega, log_n)
+}
+
+fn build_partial_table<P: MontyParameters>(omega: MontyField<P>, _log_n: u32) -> Vec<u32> {
+    let mut out = vec![0u32; PARTIAL_TWIDDLE_LEN];
+    // Window 0: partial[0][i] = omega^i
+    let mut base = omega; // omega^(2^0) = omega
+    for w in 0..NUM_WINDOWS {
+        // base = omega^(2^(w * LG_WINDOW))
+        let mut current = MontyField::<P>::from_canonical(1);
+        for i in 0..WINDOW_SIZE {
+            out[w * WINDOW_SIZE + i] = current.raw();
+            current = current * base;
+        }
+        // Advance base: square LG_WINDOW times to get omega^(2^((w+1)*LG_WINDOW))
+        for _ in 0..LG_WINDOW {
+            base = base * base;
+        }
+    }
+    out
+}
+
 /// In-place bit-reversal permutation of a power-of-two-sized slice.
 pub fn bit_reverse_in_place<T: Copy>(data: &mut [T]) {
     let n = data.len();
@@ -125,4 +184,55 @@ mod tests {
         bit_reverse_in_place(&mut x);
         assert_eq!(x, original);
     }
+
+    /// Verify that reconstructing w^k from the partial table matches the
+    /// flat twiddle table for all k in [0, N/2).
+    #[test]
+    fn partial_twiddles_reconstruct_matches_flat() {
+        for log_n in [10u32, 14, 20] {
+            let flat = build_fwd_twiddles::<BabyBearParameters>(log_n);
+            let partial = build_partial_fwd_twiddles::<BabyBearParameters>(log_n);
+            let half_n = 1usize << (log_n - 1);
+
+            for k in 0..half_n {
+                let reconstructed = reconstruct_twiddle::<BabyBearParameters>(&partial, k as u32);
+                assert_eq!(
+                    reconstructed, flat[k],
+                    "mismatch at k={k}, log_n={log_n}"
+                );
+            }
+        }
+    }
+
+    /// Verify inverse partial twiddles reconstruct correctly.
+    #[test]
+    fn partial_inv_twiddles_reconstruct_matches_flat() {
+        for log_n in [10u32, 14, 20] {
+            let flat = build_inv_twiddles::<BabyBearParameters>(log_n);
+            let partial = build_partial_inv_twiddles::<BabyBearParameters>(log_n);
+            let half_n = 1usize << (log_n - 1);
+
+            for k in 0..half_n {
+                let reconstructed = reconstruct_twiddle::<BabyBearParameters>(&partial, k as u32);
+                assert_eq!(
+                    reconstructed, flat[k],
+                    "inv mismatch at k={k}, log_n={log_n}"
+                );
+            }
+        }
+    }
+}
+
+/// Host-side reconstruction of w^k from a partial twiddle table (for testing).
+/// The kernel does this same computation on-device.
+pub fn reconstruct_twiddle<P: MontyParameters>(partial: &[u32], k: u32) -> u32 {
+    let mut acc = MontyField::<P>::from_canonical(1);
+    for w in 0..NUM_WINDOWS {
+        let k_w = ((k >> (w as u32 * LG_WINDOW)) & (WINDOW_SIZE as u32 - 1)) as usize;
+        if k_w != 0 {
+            let entry = MontyField::<P>::from_raw(partial[w * WINDOW_SIZE + k_w]);
+            acc = acc * entry;
+        }
+    }
+    acc.raw()
 }

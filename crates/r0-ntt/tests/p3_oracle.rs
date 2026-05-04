@@ -12,7 +12,10 @@ use p3_dft::{Radix2Dit, TwoAdicSubgroupDft};
 use p3_field::{PrimeField32, TwoAdicField};
 
 use r0_field::{BabyBearParameters, KoalaBearParameters, MontyField, MontyParameters};
-use r0_ntt::{bit_reverse_in_place, build_inv_twiddles, build_fwd_twiddles, ntt_inv_pass, n_inv, ntt_fwd_pass};
+use r0_ntt::{
+    bit_reverse_in_place, build_partial_fwd_twiddles, build_partial_inv_twiddles,
+    ntt_inv_pass, n_inv, ntt_fwd_pass, PARTIAL_TWIDDLE_LEN,
+};
 
 fn pick_log_wg(log_n: u32) -> u32 {
     log_n.saturating_sub(1).min(8)
@@ -39,14 +42,14 @@ impl FieldBridge for KoalaBearParameters {
 fn run_ntt<P: MontyParameters, R: Runtime>(
     device: &R::Device,
     bitrev_coeffs_raw: &[u32],
-    twiddles_raw: &[u32],
+    partial_twiddles_raw: &[u32],
     log_n: u32,
 ) -> Vec<u32> {
     let n = 1usize << log_n;
     let log_wg = pick_log_wg(log_n);
     let client = R::client(device);
     let data_h = client.create_from_slice(u32::as_bytes(bitrev_coeffs_raw));
-    let tw_h = client.create_from_slice(u32::as_bytes(twiddles_raw));
+    let tw_h = client.create_from_slice(u32::as_bytes(partial_twiddles_raw));
 
     // Single pass: stage_offset=0, log_pass=log_n -> final pass, in-place.
     unsafe {
@@ -56,7 +59,7 @@ fn run_ntt<P: MontyParameters, R: Runtime>(
             CubeDim::new_1d(1u32 << log_wg),
             ArrayArg::from_raw_parts::<u32>(&data_h, n, 1),
             ArrayArg::from_raw_parts::<u32>(&data_h, n, 1),
-            ArrayArg::from_raw_parts::<u32>(&tw_h, n / 2, 1),
+            ArrayArg::from_raw_parts::<u32>(&tw_h, PARTIAL_TWIDDLE_LEN, 1),
             log_n,
             log_n,
             0u32,
@@ -73,7 +76,7 @@ fn run_ntt<P: MontyParameters, R: Runtime>(
 fn run_intt<P: MontyParameters, R: Runtime>(
     device: &R::Device,
     natural_evals_raw: &[u32],
-    inv_twiddles_raw: &[u32],
+    partial_inv_twiddles_raw: &[u32],
     inv_n_raw: u32,
     log_n: u32,
 ) -> Vec<u32> {
@@ -81,7 +84,7 @@ fn run_intt<P: MontyParameters, R: Runtime>(
     let log_wg = pick_log_wg(log_n);
     let client = R::client(device);
     let data_h = client.create_from_slice(u32::as_bytes(natural_evals_raw));
-    let tw_h = client.create_from_slice(u32::as_bytes(inv_twiddles_raw));
+    let tw_h = client.create_from_slice(u32::as_bytes(partial_inv_twiddles_raw));
     let inv_n_h = client.create_from_slice(u32::as_bytes(&[inv_n_raw]));
 
     // Single pass: stage_offset=0, log_pass=log_n -> final pass, in-place.
@@ -92,7 +95,7 @@ fn run_intt<P: MontyParameters, R: Runtime>(
             CubeDim::new_1d(1u32 << log_wg),
             ArrayArg::from_raw_parts::<u32>(&data_h, n, 1),
             ArrayArg::from_raw_parts::<u32>(&data_h, n, 1),
-            ArrayArg::from_raw_parts::<u32>(&tw_h, n / 2, 1),
+            ArrayArg::from_raw_parts::<u32>(&tw_h, PARTIAL_TWIDDLE_LEN, 1),
             ArrayArg::from_raw_parts::<u32>(&inv_n_h, 1, 1),
             log_n,
             log_n,
@@ -127,9 +130,9 @@ where
         .collect();
     bit_reverse_in_place(&mut our_in_field);
     let our_in_raw: Vec<u32> = our_in_field.iter().map(|f| f.raw()).collect();
-    let twiddles = build_fwd_twiddles::<P>(log_n);
+    let partial_twiddles = build_partial_fwd_twiddles::<P>(log_n);
 
-    let actual_raw = run_ntt::<P, R>(&Default::default(), &our_in_raw, &twiddles, log_n);
+    let actual_raw = run_ntt::<P, R>(&Default::default(), &our_in_raw, &partial_twiddles, log_n);
     let actual: Vec<u32> = actual_raw
         .iter()
         .map(|&raw| MontyField::<P>::from_raw(raw).to_canonical())
@@ -162,10 +165,10 @@ where
         .iter()
         .map(|&v| MontyField::<P>::from_canonical(v).raw())
         .collect();
-    let inv_twiddles = build_inv_twiddles::<P>(log_n);
+    let partial_inv_twiddles = build_partial_inv_twiddles::<P>(log_n);
     let inv_n = n_inv::<P>(log_n);
 
-    let actual_raw = run_intt::<P, R>(&Default::default(), &natural_raw, &inv_twiddles, inv_n, log_n);
+    let actual_raw = run_intt::<P, R>(&Default::default(), &natural_raw, &partial_inv_twiddles, inv_n, log_n);
     let actual: Vec<u32> = actual_raw
         .iter()
         .map(|&raw| MontyField::<P>::from_raw(raw).to_canonical())
@@ -191,12 +194,12 @@ where
         .map(|&v| MontyField::<P>::from_canonical(v).raw())
         .collect();
 
-    let twiddles = build_fwd_twiddles::<P>(log_n);
-    let inv_twiddles = build_inv_twiddles::<P>(log_n);
+    let partial_twiddles = build_partial_fwd_twiddles::<P>(log_n);
+    let partial_inv_twiddles = build_partial_inv_twiddles::<P>(log_n);
     let inv_n = n_inv::<P>(log_n);
 
-    let natural_evals_raw = run_ntt::<P, R>(&Default::default(), &bitrev_raw, &twiddles, log_n);
-    let recovered_raw = run_intt::<P, R>(&Default::default(), &natural_evals_raw, &inv_twiddles, inv_n, log_n);
+    let natural_evals_raw = run_ntt::<P, R>(&Default::default(), &bitrev_raw, &partial_twiddles, log_n);
+    let recovered_raw = run_intt::<P, R>(&Default::default(), &natural_evals_raw, &partial_inv_twiddles, inv_n, log_n);
 
     let recovered: Vec<u32> = recovered_raw
         .iter()

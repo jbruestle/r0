@@ -9,4 +9,8 @@ mod twiddles;
 
 pub use fwd_pass::ntt_fwd_pass;
 pub use inv_pass::ntt_inv_pass;
-pub use twiddles::{bit_reverse_in_place, build_fwd_twiddles, build_inv_twiddles, n_inv};
+pub use twiddles::{
+    bit_reverse_in_place, build_fwd_twiddles, build_inv_twiddles,
+    build_partial_fwd_twiddles, build_partial_inv_twiddles, n_inv,
+    LG_WINDOW, NUM_WINDOWS, PARTIAL_TWIDDLE_LEN, WINDOW_SIZE,
+};

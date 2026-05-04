@@ -10,7 +10,8 @@ use p3_field::{PrimeField32, TwoAdicField};
 
 use r0_field::{BabyBearParameters, KoalaBearParameters, MontyField, MontyParameters};
 use r0_ntt::{
-    bit_reverse_in_place, build_inv_twiddles, build_fwd_twiddles, ntt_inv_pass, n_inv, ntt_fwd_pass,
+    bit_reverse_in_place, build_partial_fwd_twiddles, build_partial_inv_twiddles,
+    ntt_inv_pass, n_inv, ntt_fwd_pass, PARTIAL_TWIDDLE_LEN,
 };
 
 trait FieldBridge: MontyParameters {
@@ -44,7 +45,7 @@ fn pick_log_wg(log_pass_size: u32) -> u32 {
 fn run_forward<P: MontyParameters, R: Runtime>(
     device: &R::Device,
     bitrev_coeffs_raw: &[u32],
-    twiddles_raw: &[u32],
+    partial_twiddles_raw: &[u32],
     log_n: u32,
 ) -> Vec<u32> {
     let n = 1usize << log_n;
@@ -54,12 +55,12 @@ fn run_forward<P: MontyParameters, R: Runtime>(
     let n2: usize = 1usize << log_n2;
 
     assert_eq!(bitrev_coeffs_raw.len(), n);
-    assert_eq!(twiddles_raw.len(), n / 2);
+    assert_eq!(partial_twiddles_raw.len(), PARTIAL_TWIDDLE_LEN);
 
     let client = R::client(device);
     let buf_a = client.create_from_slice(u32::as_bytes(bitrev_coeffs_raw));
     let buf_b = client.create_from_slice(u32::as_bytes(&vec![0u32; n]));
-    let tw_h = client.create_from_slice(u32::as_bytes(twiddles_raw));
+    let tw_h = client.create_from_slice(u32::as_bytes(partial_twiddles_raw));
 
     let log_wg1 = pick_log_wg(log_n1);
     let log_wg2 = pick_log_wg(log_n2);
@@ -72,7 +73,7 @@ fn run_forward<P: MontyParameters, R: Runtime>(
             CubeDim::new_1d(1u32 << log_wg1),
             ArrayArg::from_raw_parts::<u32>(&buf_a, n, 1),
             ArrayArg::from_raw_parts::<u32>(&buf_b, n, 1),
-            ArrayArg::from_raw_parts::<u32>(&tw_h, n / 2, 1),
+            ArrayArg::from_raw_parts::<u32>(&tw_h, PARTIAL_TWIDDLE_LEN, 1),
             log_n,
             log_n1,
             0u32,
@@ -88,7 +89,7 @@ fn run_forward<P: MontyParameters, R: Runtime>(
             CubeDim::new_1d(1u32 << log_wg2),
             ArrayArg::from_raw_parts::<u32>(&buf_b, n, 1),
             ArrayArg::from_raw_parts::<u32>(&buf_b, n, 1),
-            ArrayArg::from_raw_parts::<u32>(&tw_h, n / 2, 1),
+            ArrayArg::from_raw_parts::<u32>(&tw_h, PARTIAL_TWIDDLE_LEN, 1),
             log_n,
             log_n2,
             log_n1,
@@ -117,7 +118,7 @@ fn run_forward<P: MontyParameters, R: Runtime>(
 fn run_inverse<P: MontyParameters, R: Runtime>(
     device: &R::Device,
     natural_evals_raw: &[u32],
-    inv_twiddles_raw: &[u32],
+    partial_inv_twiddles_raw: &[u32],
     inv_n_raw: u32,
     log_n: u32,
 ) -> Vec<u32> {
@@ -141,7 +142,7 @@ fn run_inverse<P: MontyParameters, R: Runtime>(
 
     let buf_a = client.create_from_slice(u32::as_bytes(&transposed_input));
     let buf_b = client.create_from_slice(u32::as_bytes(&vec![0u32; n]));
-    let tw_h = client.create_from_slice(u32::as_bytes(inv_twiddles_raw));
+    let tw_h = client.create_from_slice(u32::as_bytes(partial_inv_twiddles_raw));
     let inv_n_h = client.create_from_slice(u32::as_bytes(&[inv_n_raw]));
 
     let log_wg1 = pick_log_wg(log_n2);
@@ -156,7 +157,7 @@ fn run_inverse<P: MontyParameters, R: Runtime>(
             CubeDim::new_1d(1u32 << log_wg1),
             ArrayArg::from_raw_parts::<u32>(&buf_a, n, 1),
             ArrayArg::from_raw_parts::<u32>(&buf_b, n, 1),
-            ArrayArg::from_raw_parts::<u32>(&tw_h, n / 2, 1),
+            ArrayArg::from_raw_parts::<u32>(&tw_h, PARTIAL_TWIDDLE_LEN, 1),
             ArrayArg::from_raw_parts::<u32>(&inv_n_h, 1, 1),
             log_n,
             log_n2,
@@ -174,7 +175,7 @@ fn run_inverse<P: MontyParameters, R: Runtime>(
             CubeDim::new_1d(1u32 << log_wg2),
             ArrayArg::from_raw_parts::<u32>(&buf_b, n, 1),
             ArrayArg::from_raw_parts::<u32>(&buf_b, n, 1),
-            ArrayArg::from_raw_parts::<u32>(&tw_h, n / 2, 1),
+            ArrayArg::from_raw_parts::<u32>(&tw_h, PARTIAL_TWIDDLE_LEN, 1),
             ArrayArg::from_raw_parts::<u32>(&inv_n_h, 1, 1),
             log_n,
             log_n1,
@@ -186,37 +187,7 @@ fn run_inverse<P: MontyParameters, R: Runtime>(
     }
 
     let bytes = client.read_one(buf_b);
-    let raw_out = u32::from_bytes(&bytes).to_vec();
-
-    // The output is in [N2][N1] transposed layout (pass 1 transposes
-    // [N1 slabs of N2] -> [N2][N1], pass 2 operates in-place within
-    // [N2][N1]). Un-transpose to recover natural order.
-    //
-    // Pass 1: N_pass=N2, N_other=N1.
-    //   Transposed store: output[local_idx * N1 + chunk_id]
-    //   where chunk_id  in  [0, N1), local_idx  in  [0, N2).
-    //   Layout: [N2][N1] (N2 rows of N1 columns).
-    //
-    // Pass 2: N_pass=N1, reads from [N2][N1] contiguously.
-    //   Workgroup wg reads row wg: [wg*N1, (wg+1)*N1).
-    //   Final pass stores in-place -> stays [N2][N1].
-    //
-    // To recover natural order:
-    //   natural[row * N1 + col] where row  in  [0, N2), col  in  [0, N1)
-    //   corresponds to the original slab element:
-    //     slab i_low=col, position j=row -> original position col + row * N1
-    //   So: natural[col + row * N1] = raw_out[row * N1 + col]
-    // Which is just: natural[i] = raw_out[(i/N1)*N1 + (i%N1)]... that's identity!
-    //
-    // Wait  --  that means the [N2][N1] layout IS natural order when
-    // viewed as a flat array?! No  --  [N2][N1] means N2 groups of N1.
-    // Position p = row * N1 + col. Natural position = col + row * N1
-    // = row * N1 + col = p. It IS the identity for the flat layout!
-    //
-    // The transpose happens at the slab level, not element level. The
-    // first pass picks up slabs (stride-N1 elements) and reassembles
-    // them contiguously. The output is already in natural memory order.
-    raw_out
+    u32::from_bytes(&bytes).to_vec()
 }
 
 // ---- Checks ----
@@ -242,10 +213,10 @@ where
         .collect();
     bit_reverse_in_place(&mut our_in_field);
     let our_in_raw: Vec<u32> = our_in_field.iter().map(|f| f.raw()).collect();
-    let twiddles = build_fwd_twiddles::<P>(log_n);
+    let partial_twiddles = build_partial_fwd_twiddles::<P>(log_n);
 
     let kernel_out_raw =
-        run_forward::<P, R>(&Default::default(), &our_in_raw, &twiddles, log_n);
+        run_forward::<P, R>(&Default::default(), &our_in_raw, &partial_twiddles, log_n);
 
     let actual: Vec<u32> = kernel_out_raw
         .iter()
@@ -280,13 +251,13 @@ where
         .iter()
         .map(|&v| MontyField::<P>::from_canonical(v).raw())
         .collect();
-    let inv_twiddles = build_inv_twiddles::<P>(log_n);
+    let partial_inv_twiddles = build_partial_inv_twiddles::<P>(log_n);
     let inv_n = n_inv::<P>(log_n);
 
     let kernel_out_raw = run_inverse::<P, R>(
         &Default::default(),
         &natural_raw,
-        &inv_twiddles,
+        &partial_inv_twiddles,
         inv_n,
         log_n,
     );
@@ -340,7 +311,7 @@ fn kb_cpu()   { check_all::<KoalaBearParameters, CpuRuntime>([14u32]); }
 fn run_forward_3pass<P: MontyParameters, R: Runtime>(
     device: &R::Device,
     bitrev_coeffs_raw: &[u32],
-    twiddles_raw: &[u32],
+    partial_twiddles_raw: &[u32],
     log_n: u32,
 ) -> Vec<u32> {
     let n = 1usize << log_n;
@@ -352,7 +323,6 @@ fn run_forward_3pass<P: MontyParameters, R: Runtime>(
     let log_c = step;
     assert_eq!(log_a + log_b + log_c, log_n);
 
-    let n_a = 1usize << log_a;
     let n_bc = 1usize << (log_b + log_c); // number of chunks for pass 1
     let n_ac = 1usize << (log_a + log_c); // number of chunks for pass 2
     let n_ab = 1usize << (log_a + log_b); // number of chunks for pass 3
@@ -360,7 +330,7 @@ fn run_forward_3pass<P: MontyParameters, R: Runtime>(
     let client = R::client(device);
     let buf_a = client.create_from_slice(u32::as_bytes(bitrev_coeffs_raw));
     let buf_b = client.create_from_slice(u32::as_bytes(&vec![0u32; n]));
-    let tw_h = client.create_from_slice(u32::as_bytes(twiddles_raw));
+    let tw_h = client.create_from_slice(u32::as_bytes(partial_twiddles_raw));
 
     let log_wg_a = pick_log_wg(log_a);
     let log_wg_b = pick_log_wg(log_b);
@@ -374,7 +344,7 @@ fn run_forward_3pass<P: MontyParameters, R: Runtime>(
             CubeDim::new_1d(1u32 << log_wg_a),
             ArrayArg::from_raw_parts::<u32>(&buf_a, n, 1),
             ArrayArg::from_raw_parts::<u32>(&buf_b, n, 1),
-            ArrayArg::from_raw_parts::<u32>(&tw_h, n / 2, 1),
+            ArrayArg::from_raw_parts::<u32>(&tw_h, PARTIAL_TWIDDLE_LEN, 1),
             log_n,
             log_a,
             0u32,
@@ -389,7 +359,7 @@ fn run_forward_3pass<P: MontyParameters, R: Runtime>(
             CubeDim::new_1d(1u32 << log_wg_b),
             ArrayArg::from_raw_parts::<u32>(&buf_b, n, 1),
             ArrayArg::from_raw_parts::<u32>(&buf_a, n, 1),
-            ArrayArg::from_raw_parts::<u32>(&tw_h, n / 2, 1),
+            ArrayArg::from_raw_parts::<u32>(&tw_h, PARTIAL_TWIDDLE_LEN, 1),
             log_n,
             log_b,
             log_a,
@@ -404,7 +374,7 @@ fn run_forward_3pass<P: MontyParameters, R: Runtime>(
             CubeDim::new_1d(1u32 << log_wg_c),
             ArrayArg::from_raw_parts::<u32>(&buf_a, n, 1),
             ArrayArg::from_raw_parts::<u32>(&buf_a, n, 1),
-            ArrayArg::from_raw_parts::<u32>(&tw_h, n / 2, 1),
+            ArrayArg::from_raw_parts::<u32>(&tw_h, PARTIAL_TWIDDLE_LEN, 1),
             log_n,
             log_c,
             log_a + log_b,
@@ -413,10 +383,22 @@ fn run_forward_3pass<P: MontyParameters, R: Runtime>(
         ).expect("3-pass: pass 3 failed");
     }
 
-    // The output is in some transposed layout from the composition of
-    // two transposes. For now just return raw and see if a permutation
-    // of expected values exists.
-    u32::from_bytes(&client.read_one(buf_a)).to_vec()
+    let raw = u32::from_bytes(&client.read_one(buf_a)).to_vec();
+
+    // The 3-pass output layout after two transposes + final contiguous store
+    // is [N_b][N_a][N_c]. Un-transpose to natural order.
+    let n_a = 1usize << log_a;
+    let n_b = 1usize << log_b;
+    let n_c = 1usize << log_c;
+    let mut natural = vec![0u32; n];
+    for m in 0..n {
+        let i_b = m / (n_a * n_c);
+        let i_a = (m / n_c) % n_a;
+        let i_c = m % n_c;
+        let p = i_a + i_b * n_a + i_c * n_a * n_b;
+        natural[p] = raw[m];
+    }
+    natural
 }
 
 #[test]
@@ -442,36 +424,17 @@ fn three_pass_forward_cuda_21() {
         .map(|&v| MontyField::<P>::from_canonical(v)).collect();
     bit_reverse_in_place(&mut our_in_field);
     let our_in_raw: Vec<u32> = our_in_field.iter().map(|f| f.raw()).collect();
-    let twiddles = build_fwd_twiddles::<P>(log_n);
+    let partial_twiddles = build_partial_fwd_twiddles::<P>(log_n);
 
     let result = run_forward_3pass::<P, R>(
-        &Default::default(), &our_in_raw, &twiddles, log_n);
+        &Default::default(), &our_in_raw, &partial_twiddles, log_n);
 
     let actual: Vec<u32> = result.iter()
         .map(|&raw| MontyField::<P>::from_raw(raw).to_canonical()).collect();
 
-    // First check: do all expected values appear in actual (permutation check)?
-    let mut expected_sorted = expected.clone();
-    let mut actual_sorted = actual.clone();
-    expected_sorted.sort();
-    actual_sorted.sort();
-    let is_permutation = expected_sorted == actual_sorted;
-
-    if actual == expected {
-        eprintln!("3-pass log_n=21: EXACT MATCH!");
-    } else if is_permutation {
-        eprintln!("3-pass log_n=21: output is a PERMUTATION of expected (transpose issue)");
-        eprintln!("  first diff at {:?}", actual.iter().zip(expected.iter()).position(|(a,b)| a != b));
-    } else {
-        eprintln!("3-pass log_n=21: output is WRONG (not even a permutation)");
-        eprintln!("  first diff at {:?}", actual.iter().zip(expected.iter()).position(|(a,b)| a != b));
-        // Check how many values match
-        let matches = actual.iter().zip(expected.iter()).filter(|(a,b)| a == b).count();
-        eprintln!("  {}/{} values match in-place", matches, n);
-    }
-
-    // For now, just assert it's at least a permutation (meaning the
-    // NTT math is correct, just the output layout differs).
-    assert!(actual == expected || is_permutation,
-        "3-pass output is neither correct nor a permutation of correct");
+    assert_eq!(
+        actual, expected,
+        "3-pass forward mismatch at log_n={log_n}: first divergence at {:?}",
+        actual.iter().zip(expected.iter()).position(|(a, b)| a != b)
+    );
 }
