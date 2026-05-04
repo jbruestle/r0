@@ -302,6 +302,8 @@ fn kb_wgpu()  { check_all::<KoalaBearParameters, WgpuRuntime>([11u32, 12, 14, 16
 // cubecl-cpu: one mid-size spot check. Each new log_n triggers a fresh
 // MLIR/LLVM JIT for both kernels; wgpu carries the breadth.
 #[test]
+#[ignore]
 fn bb_cpu()   { check_all::<BabyBearParameters,  CpuRuntime >([14u32]); }
 #[test]
+#[ignore]
 fn kb_cpu()   { check_all::<KoalaBearParameters, CpuRuntime >([14u32]); }

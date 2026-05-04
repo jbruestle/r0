@@ -17,3 +17,9 @@ p3-baby-bear = { workspace = true }
 p3-koala-bear = { workspace = true }
 p3-dft = { workspace = true }
 p3-matrix = { workspace = true }
+criterion = { workspace = true }
+cubecl-common = { workspace = true }
+
+[[bench]]
+name = "forward_2pow20"
+harness = false

@@ -1,0 +1,91 @@
+//! Forward NTT throughput, BabyBear, log_n=20 (1M points), wgpu/Metal.
+//!
+//! Setup is one-time (input upload, twiddle upload). Each bench
+//! iteration:
+//!   1. Launch ntt_pass1
+//!   2. Launch ntt_pass2
+//!   3. `client.sync()` — wait for the GPU to finish
+//!
+//! No host↔device transfer is in the timed loop; the data buffer is
+//! used in-place across iterations. Step 3 makes us measure actual GPU
+//! completion latency, not just command-buffer queueing.
+
+use criterion::{criterion_group, criterion_main, Criterion};
+use cubecl::prelude::*;
+use cubecl::wgpu::WgpuRuntime;
+
+use r0_field::{BabyBearParameters, MontyField, MontyParameters};
+use r0_ntt::{bit_reverse_in_place, build_twiddles, ntt_pass1, ntt_pass2};
+
+fn forward_ntt(c: &mut Criterion) {
+    type P = BabyBearParameters;
+    type R = WgpuRuntime;
+
+    const LOG_N: u32 = 20;
+    const LOG_N1: u32 = 10; // balanced split
+    const LOG_N2: u32 = 10;
+    const LOG_WG: u32 = 8; // 256 threads / workgroup (WebGPU-portable cap)
+
+    let n: usize = 1usize << LOG_N;
+    let n1: usize = 1usize << LOG_N1;
+    let n2: usize = 1usize << LOG_N2;
+
+    // ---- One-time setup: deterministic input + Montgomery + bit-rev ----
+    let canonical: Vec<u32> = (0..n as u32)
+        .map(|i| (i.wrapping_mul(0x9E3779B1) ^ 0xDEADBEEF) % P::PRIME)
+        .collect();
+    let mut input_field: Vec<MontyField<P>> = canonical
+        .iter()
+        .map(|&v| MontyField::<P>::from_canonical(v))
+        .collect();
+    bit_reverse_in_place(&mut input_field);
+    let input_raw: Vec<u32> = input_field.iter().map(|f| f.raw()).collect();
+    let twiddles = build_twiddles::<P>(LOG_N);
+
+    // ---- Persistent device buffers ----
+    let device = <R as Runtime>::Device::default();
+    let client = R::client(&device);
+
+    let data_h = client.create_from_slice(u32::as_bytes(&input_raw));
+    let tw_h = client.create_from_slice(u32::as_bytes(&twiddles));
+
+    let mut group = c.benchmark_group("forward_ntt_bb_log_n20_wgpu");
+    // Each iteration is a complete forward NTT over 2^20 = 1M points.
+    group.throughput(criterion::Throughput::Elements(n as u64));
+    group.bench_function("forward", |b| {
+        b.iter(|| {
+            unsafe {
+                ntt_pass1::launch_unchecked::<P, R>(
+                    &client,
+                    CubeCount::Static(n2 as u32, 1, 1),
+                    CubeDim::new_1d(1u32 << LOG_WG),
+                    ArrayArg::from_raw_parts::<u32>(&data_h, n, 1),
+                    ArrayArg::from_raw_parts::<u32>(&tw_h, n / 2, 1),
+                    LOG_N,
+                    LOG_N1,
+                    LOG_WG,
+                )
+                .expect("ntt_pass1 launch failed");
+
+                ntt_pass2::launch_unchecked::<P, R>(
+                    &client,
+                    CubeCount::Static(n1 as u32, 1, 1),
+                    CubeDim::new_1d(1u32 << LOG_WG),
+                    ArrayArg::from_raw_parts::<u32>(&data_h, n, 1),
+                    ArrayArg::from_raw_parts::<u32>(&tw_h, n / 2, 1),
+                    LOG_N,
+                    LOG_N1,
+                    LOG_WG,
+                )
+                .expect("ntt_pass2 launch failed");
+            }
+
+            // Wait for both kernels to actually complete on the GPU.
+            cubecl_common::reader::read_sync(client.sync()).expect("sync failed");
+        });
+    });
+    group.finish();
+}
+
+criterion_group!(benches, forward_ntt);
+criterion_main!(benches);
