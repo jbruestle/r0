@@ -34,6 +34,13 @@
 //!   Applies stages with original stride `N1/2..1` (pass-2-local
 //!   descending stride `N1/2..1`).
 //!
+//! # Batching
+//!
+//! All four kernels support grid-Y batching: `CUBE_POS_Y` selects the
+//! polynomial within a contiguous `[batch * N]` buffer. Twiddle tables
+//! are shared across all batch rows. Launch with
+//! `CubeCount::Static(blocks_per_poly, batch_size, 1)`.
+//!
 //! Bound constraints (host-side, not asserted in kernel):
 //! - `log_n1 + log_n2 == log_n`, both ≥ 1.
 //! - For each pass, the kernel's `log_wg` must satisfy
@@ -43,7 +50,10 @@ use cubecl::prelude::*;
 use r0_field::{monty_add, monty_mul, monty_sub, MontyParameters};
 
 /// Pass 1: contiguous-chunk CT-DIT on `2^log_n1` elements per workgroup.
-/// Workgroup index = chunk id, range `[0, N2)`. In-place on `data`.
+/// Workgroup index X = chunk id, range `[0, N2)`.
+/// Workgroup index Y = batch id (grid-Y batching). Each batch is a
+/// contiguous `N`-element polynomial; batch stride = `N = 2^log_n`.
+/// In-place on `data`.
 #[cube(launch_unchecked)]
 pub fn ntt_pass1<P: MontyParameters>(
     data: &mut Array<u32>,
@@ -52,13 +62,15 @@ pub fn ntt_pass1<P: MontyParameters>(
     #[comptime] log_n1: u32,
     #[comptime] log_wg: u32,
 ) {
+    let n = comptime!(1usize << log_n);
     let n1 = comptime!(1usize << log_n1);
     let wg_size = comptime!(1usize << log_wg);
     let loads_per_thread = comptime!(1usize << (log_n1 - log_wg));
     let butt_per_thread = comptime!(1usize << (log_n1 - 1 - log_wg));
 
-    let block_id = CUBE_POS as usize;
-    let block_offset = block_id * n1;
+    let block_id = CUBE_POS_X as usize;
+    let batch_offset = CUBE_POS_Y as usize * n;
+    let block_offset = batch_offset + block_id * n1;
     let mut shared = SharedMemory::<u32>::new(n1);
     let tid = UNIT_POS as usize;
 
@@ -107,8 +119,9 @@ pub fn ntt_pass1<P: MontyParameters>(
 }
 
 /// Pass 2: strided-slab CT-DIT on `2^log_n2 = 2^(log_n - log_n1)`
-/// elements per workgroup. Workgroup index = `i_low ∈ [0, N1)`. The
-/// slab is `{ data[i_low + j*N1] : j ∈ 0..N2 }`. In-place on `data`.
+/// elements per workgroup. Workgroup index X = `i_low ∈ [0, N1)`.
+/// Workgroup index Y = batch id.
+/// The slab is `{ data[i_low + j*N1] : j ∈ 0..N2 }`. In-place on `data`.
 ///
 /// At pass-2-local stage `s' ∈ [0, log_n2)`, butterfly `j ∈ [0, 2^s')`,
 /// the global twiddle index is `i_low * outer_step + j * inner_step`
@@ -126,6 +139,7 @@ pub fn ntt_pass2<P: MontyParameters>(
     #[comptime] log_n1: u32,
     #[comptime] log_wg: u32,
 ) {
+    let n = comptime!(1usize << log_n);
     let n1 = comptime!(1usize << log_n1);
     let n2 = comptime!(1usize << (log_n - log_n1));
     let log_n2 = comptime!(log_n - log_n1);
@@ -133,15 +147,16 @@ pub fn ntt_pass2<P: MontyParameters>(
     let loads_per_thread = comptime!(1usize << (log_n - log_n1 - log_wg));
     let butt_per_thread = comptime!(1usize << (log_n - log_n1 - 1 - log_wg));
 
-    let i_low = CUBE_POS as usize;
+    let batch_offset = CUBE_POS_Y as usize * n;
+    let i_low = CUBE_POS_X as usize;
     let mut shared = SharedMemory::<u32>::new(n2);
     let tid = UNIT_POS as usize;
 
-    // -- Load: strided slab `data[i_low + j*N1]` for j ∈ 0..N2 --
+    // -- Load: strided slab `data[batch_offset + i_low + j*N1]` for j ∈ 0..N2 --
     #[unroll]
     for k in 0..loads_per_thread {
         let local_j = tid + k * wg_size;
-        shared[local_j] = data[i_low + local_j * n1];
+        shared[local_j] = data[batch_offset + i_low + local_j * n1];
     }
     sync_cube();
 
@@ -180,13 +195,14 @@ pub fn ntt_pass2<P: MontyParameters>(
     #[unroll]
     for k in 0..loads_per_thread {
         let local_j = tid + k * wg_size;
-        data[i_low + local_j * n1] = shared[local_j];
+        data[batch_offset + i_low + local_j * n1] = shared[local_j];
     }
 }
 
 /// Inverse pass 1: strided-slab GS-DIF, handles the FIRST `log_n2`
 /// stages of the descending-stride iteration (original strides
-/// `N/2 .. N1`). Workgroup index = `i_low ∈ [0, N1)`. Slab is
+/// `N/2 .. N1`). Workgroup index X = `i_low ∈ [0, N1)`.
+/// Workgroup index Y = batch id. Slab is
 /// `{ data[i_low + j*N1] : j ∈ 0..N2 }`. Also does the `×N⁻¹`
 /// pre-multiplication at the load step.
 ///
@@ -208,6 +224,7 @@ pub fn intt_pass1<P: MontyParameters>(
     #[comptime] log_n1: u32,
     #[comptime] log_wg: u32,
 ) {
+    let n = comptime!(1usize << log_n);
     let n1 = comptime!(1usize << log_n1);
     let n2 = comptime!(1usize << (log_n - log_n1));
     let log_n2 = comptime!(log_n - log_n1);
@@ -215,7 +232,8 @@ pub fn intt_pass1<P: MontyParameters>(
     let loads_per_thread = comptime!(1usize << (log_n - log_n1 - log_wg));
     let butt_per_thread = comptime!(1usize << (log_n - log_n1 - 1 - log_wg));
 
-    let i_low = CUBE_POS as usize;
+    let batch_offset = CUBE_POS_Y as usize * n;
+    let i_low = CUBE_POS_X as usize;
     let mut shared = SharedMemory::<u32>::new(n2);
     let tid = UNIT_POS as usize;
     let n_inv_value = inv_n[0];
@@ -224,7 +242,7 @@ pub fn intt_pass1<P: MontyParameters>(
     #[unroll]
     for k in 0..loads_per_thread {
         let local_j = tid + k * wg_size;
-        shared[local_j] = monty_mul::<P>(data[i_low + local_j * n1], n_inv_value);
+        shared[local_j] = monty_mul::<P>(data[batch_offset + i_low + local_j * n1], n_inv_value);
     }
     sync_cube();
 
@@ -268,13 +286,14 @@ pub fn intt_pass1<P: MontyParameters>(
     #[unroll]
     for k in 0..loads_per_thread {
         let local_j = tid + k * wg_size;
-        data[i_low + local_j * n1] = shared[local_j];
+        data[batch_offset + i_low + local_j * n1] = shared[local_j];
     }
 }
 
 /// Inverse pass 2: contiguous-chunk GS-DIF, handles the LAST `log_n1`
 /// stages of the descending-stride iteration (original strides
-/// `N1/2 .. 1`). Workgroup index = chunk id `∈ [0, N2)`. Chunk is
+/// `N1/2 .. 1`). Workgroup index X = chunk id `∈ [0, N2)`.
+/// Workgroup index Y = batch id. Chunk is
 /// `data[block_id*N1 .. (block_id+1)*N1]`.
 ///
 /// Twiddle index for pass-2-local stage `s_p2` ∈ `[0, log_n1)`,
@@ -294,14 +313,16 @@ pub fn intt_pass2<P: MontyParameters>(
     #[comptime] log_n1: u32,
     #[comptime] log_wg: u32,
 ) {
+    let n = comptime!(1usize << log_n);
     let n1 = comptime!(1usize << log_n1);
     let log_n2 = comptime!(log_n - log_n1);
     let wg_size = comptime!(1usize << log_wg);
     let loads_per_thread = comptime!(1usize << (log_n1 - log_wg));
     let butt_per_thread = comptime!(1usize << (log_n1 - 1 - log_wg));
 
-    let block_id = CUBE_POS as usize;
-    let block_offset = block_id * n1;
+    let block_id = CUBE_POS_X as usize;
+    let batch_offset = CUBE_POS_Y as usize * n;
+    let block_offset = batch_offset + block_id * n1;
     let mut shared = SharedMemory::<u32>::new(n1);
     let tid = UNIT_POS as usize;
 

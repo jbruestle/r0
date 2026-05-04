@@ -23,3 +23,11 @@ cubecl-common = { workspace = true }
 [[bench]]
 name = "forward_2pow20"
 harness = false
+
+[[bench]]
+name = "forward_2pow20_cuda"
+harness = false
+
+[[bench]]
+name = "forward_2pow20_cuda_batched"
+harness = false

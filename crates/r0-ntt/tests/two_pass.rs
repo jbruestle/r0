@@ -307,3 +307,118 @@ fn bb_cpu()   { check_all::<BabyBearParameters,  CpuRuntime >([14u32]); }
 #[test]
 #[ignore]
 fn kb_cpu()   { check_all::<KoalaBearParameters, CpuRuntime >([14u32]); }
+
+// ---- Grid-Y batched correctness ----
+
+/// Run a forward NTT on `batch_count` independent polynomials packed
+/// contiguously, using grid-Y batching (one pair of kernel launches).
+fn run_batched_forward<P: MontyParameters, R: Runtime>(
+    device: &R::Device,
+    all_bitrev_raw: &[u32],
+    twiddles_raw: &[u32],
+    log_n: u32,
+    batch_count: u32,
+) -> Vec<u32> {
+    let n = 1usize << log_n;
+    let log_n1 = pick_log_n1(log_n);
+    let log_n2 = log_n - log_n1;
+    let n1: usize = 1usize << log_n1;
+    let n2: usize = 1usize << log_n2;
+
+    assert_eq!(all_bitrev_raw.len(), n * batch_count as usize);
+    assert_eq!(twiddles_raw.len(), n / 2);
+
+    let client = R::client(device);
+    let data_h = client.create_from_slice(u32::as_bytes(all_bitrev_raw));
+    let tw_h = client.create_from_slice(u32::as_bytes(twiddles_raw));
+
+    let log_wg1 = pick_log_wg(log_n1);
+    let log_wg2 = pick_log_wg(log_n2);
+
+    unsafe {
+        ntt_pass1::launch_unchecked::<P, R>(
+            &client,
+            CubeCount::Static(n2 as u32, batch_count, 1),
+            CubeDim::new_1d(1u32 << log_wg1),
+            ArrayArg::from_raw_parts::<u32>(&data_h, n * batch_count as usize, 1),
+            ArrayArg::from_raw_parts::<u32>(&tw_h, n / 2, 1),
+            log_n,
+            log_n1,
+            log_wg1,
+        )
+        .expect("ntt_pass1 launch failed");
+
+        ntt_pass2::launch_unchecked::<P, R>(
+            &client,
+            CubeCount::Static(n1 as u32, batch_count, 1),
+            CubeDim::new_1d(1u32 << log_wg2),
+            ArrayArg::from_raw_parts::<u32>(&data_h, n * batch_count as usize, 1),
+            ArrayArg::from_raw_parts::<u32>(&tw_h, n / 2, 1),
+            log_n,
+            log_n1,
+            log_wg2,
+        )
+        .expect("ntt_pass2 launch failed");
+    }
+
+    let bytes = client.read_one(data_h);
+    u32::from_bytes(&bytes).to_vec()
+}
+
+/// Verify that batched forward NTT produces the same result as running
+/// each polynomial independently.
+fn check_batched_forward<P: FieldBridge, R: Runtime>(log_n: u32, batch_count: u32)
+where
+    R::Device: Default,
+{
+    let n = 1usize << log_n;
+    let twiddles = build_twiddles::<P>(log_n);
+
+    // Build `batch_count` distinct polynomials and compute single-poly
+    // expected outputs.
+    let mut all_bitrev_raw = Vec::with_capacity(n * batch_count as usize);
+    let mut expected_all = Vec::with_capacity(n * batch_count as usize);
+
+    for b in 0..batch_count {
+        let seed = 0x9E3779B1u32.wrapping_mul(b.wrapping_add(1));
+        let canonical: Vec<u32> = (0..n as u32)
+            .map(|i| (i.wrapping_mul(seed) ^ 0xDEADBEEF) % P::PRIME)
+            .collect();
+
+        let mut field: Vec<MontyField<P>> = canonical
+            .iter()
+            .map(|&v| MontyField::<P>::from_canonical(v))
+            .collect();
+        bit_reverse_in_place(&mut field);
+        let bitrev_raw: Vec<u32> = field.iter().map(|f| f.raw()).collect();
+
+        // Single-poly reference
+        let single = run_two_pass_forward::<P, R>(&Default::default(), &bitrev_raw, &twiddles, log_n);
+        expected_all.extend_from_slice(&single);
+        all_bitrev_raw.extend_from_slice(&bitrev_raw);
+    }
+
+    let batched_out = run_batched_forward::<P, R>(
+        &Default::default(),
+        &all_bitrev_raw,
+        &twiddles,
+        log_n,
+        batch_count,
+    );
+
+    assert_eq!(
+        batched_out, expected_all,
+        "batched forward mismatch at log_n={log_n}, batch={batch_count}"
+    );
+}
+
+#[test]
+fn bb_batched_wgpu() {
+    check_batched_forward::<BabyBearParameters, WgpuRuntime>(14, 4);
+    check_batched_forward::<BabyBearParameters, WgpuRuntime>(16, 3);
+}
+
+#[test]
+fn kb_batched_wgpu() {
+    check_batched_forward::<KoalaBearParameters, WgpuRuntime>(14, 4);
+}
