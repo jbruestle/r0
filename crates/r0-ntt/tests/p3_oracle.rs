@@ -35,9 +35,9 @@ fn run_ntt<P: MontyParameters, R: Runtime>(
     assert_eq!(twiddles_raw.len(), n / 2);
 
     let client = R::client(device);
-    let in_h = client.create_from_slice(u32::as_bytes(bitrev_coeffs_raw));
+    // In-place: `data_h` carries inputs in, evaluations out.
+    let data_h = client.create_from_slice(u32::as_bytes(bitrev_coeffs_raw));
     let tw_h = client.create_from_slice(u32::as_bytes(twiddles_raw));
-    let out_h = client.empty(n * core::mem::size_of::<u32>());
 
     let wg_size = 1u32 << log_wg;
 
@@ -46,16 +46,15 @@ fn run_ntt<P: MontyParameters, R: Runtime>(
             &client,
             CubeCount::Static(1, 1, 1),
             CubeDim::new_1d(wg_size),
-            ArrayArg::from_raw_parts::<u32>(&in_h, n, 1),
+            ArrayArg::from_raw_parts::<u32>(&data_h, n, 1),
             ArrayArg::from_raw_parts::<u32>(&tw_h, n / 2, 1),
-            ArrayArg::from_raw_parts::<u32>(&out_h, n, 1),
             log_n,
             log_wg,
         )
         .expect("kernel launch failed");
     }
 
-    let bytes = client.read_one(out_h);
+    let bytes = client.read_one(data_h);
     u32::from_bytes(&bytes).to_vec()
 }
 
@@ -142,10 +141,9 @@ fn run_intt<P: MontyParameters, R: Runtime>(
     assert_eq!(inv_twiddles_raw.len(), n / 2);
 
     let client = R::client(device);
-    let in_h = client.create_from_slice(u32::as_bytes(natural_evals_raw));
+    let data_h = client.create_from_slice(u32::as_bytes(natural_evals_raw));
     let tw_h = client.create_from_slice(u32::as_bytes(inv_twiddles_raw));
     let inv_n_h = client.create_from_slice(u32::as_bytes(&[inv_n_raw]));
-    let out_h = client.empty(n * core::mem::size_of::<u32>());
 
     let wg_size = 1u32 << log_wg;
 
@@ -154,17 +152,16 @@ fn run_intt<P: MontyParameters, R: Runtime>(
             &client,
             CubeCount::Static(1, 1, 1),
             CubeDim::new_1d(wg_size),
-            ArrayArg::from_raw_parts::<u32>(&in_h, n, 1),
+            ArrayArg::from_raw_parts::<u32>(&data_h, n, 1),
             ArrayArg::from_raw_parts::<u32>(&tw_h, n / 2, 1),
             ArrayArg::from_raw_parts::<u32>(&inv_n_h, 1, 1),
-            ArrayArg::from_raw_parts::<u32>(&out_h, n, 1),
             log_n,
             log_wg,
         )
         .expect("inverse kernel launch failed");
     }
 
-    let bytes = client.read_one(out_h);
+    let bytes = client.read_one(data_h);
     u32::from_bytes(&bytes).to_vec()
 }
 

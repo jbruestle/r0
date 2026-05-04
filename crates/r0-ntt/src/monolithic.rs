@@ -1,23 +1,30 @@
-//! Monolithic forward NTT kernel for `log_n ≤ 10`.
+//! Monolithic NTT kernels (forward + inverse) for `log_n ≤ 10`.
 //!
-//! Single workgroup processes the entire 2^log_n-point transform through
-//! workgroup-shared memory. Stages run with stride `2^s` ascending from
-//! `s=0` (stride 1) to `s=log_n-1` (stride N/2), which is the iteration
-//! pattern that consumes bit-reversed coefficients and produces
-//! natural-order evaluations — sppark's RN convention, our canonical
-//! convention (`DESIGN.md` §7).
+//! A single workgroup processes the entire 2^log_n-point transform
+//! through workgroup-shared memory. Both kernels are **in-place**:
+//! the `data` buffer is loaded into shared memory, butterflied through
+//! all log_n stages, then written back. sppark uses the same pattern
+//! (`fr_t* d_inout`).
 //!
-//! Per-stage twiddles are read from a flat `[ω^0, …, ω^(N/2−1)]` table
-//! built on the host. Stage `s` uses twiddles at stride `2^(log_n−s−1)`.
+//! Forward (`ntt_monolithic`): CT-DIT butterfly `(a + ω·b, a − ω·b)`,
+//! ascending stride, bit-reversed coefficients in → natural-order
+//! evaluations out (`DESIGN.md` §7).
+//!
+//! Inverse (`ntt_monolithic_inverse`): GS-DIF butterfly
+//! `(a + b, (a − b) · ω)`, descending stride, inverse twiddles, with
+//! the `×N⁻¹` scaling folded into the load step. Natural-order
+//! evaluations in → bit-reversed coefficients out.
+//!
+//! Per-stage twiddles are read from flat `[ω^0..ω^(N/2−1)]` (or
+//! inverse) tables built on the host.
 
 use cubecl::prelude::*;
 use r0_field::{monty_add, monty_mul, monty_sub, MontyParameters};
 
 #[cube(launch_unchecked)]
 pub fn ntt_monolithic<P: MontyParameters>(
-    input: &Array<u32>,
+    data: &mut Array<u32>,
     twiddles: &Array<u32>,
-    output: &mut Array<u32>,
     #[comptime] log_n: u32,
     #[comptime] log_wg: u32,
 ) {
@@ -38,7 +45,7 @@ pub fn ntt_monolithic<P: MontyParameters>(
     #[unroll]
     for k in 0..loads_per_thread {
         let idx = tid + k * wg_size;
-        shared[idx] = input[idx];
+        shared[idx] = data[idx];
     }
     sync_cube();
 
@@ -73,11 +80,11 @@ pub fn ntt_monolithic<P: MontyParameters>(
         sync_cube();
     }
 
-    // -- Store: shared → output --
+    // -- Store: shared → data (in-place) --
     #[unroll]
     for k in 0..loads_per_thread {
         let idx = tid + k * wg_size;
-        output[idx] = shared[idx];
+        data[idx] = shared[idx];
     }
 }
 
@@ -96,10 +103,9 @@ pub fn ntt_monolithic<P: MontyParameters>(
 /// which cubecl 0.9 handles awkwardly.
 #[cube(launch_unchecked)]
 pub fn ntt_monolithic_inverse<P: MontyParameters>(
-    input: &Array<u32>,
+    data: &mut Array<u32>,
     inv_twiddles: &Array<u32>,
     inv_n: &Array<u32>,
-    output: &mut Array<u32>,
     #[comptime] log_n: u32,
     #[comptime] log_wg: u32,
 ) {
@@ -116,7 +122,7 @@ pub fn ntt_monolithic_inverse<P: MontyParameters>(
     #[unroll]
     for k in 0..loads_per_thread {
         let idx = tid + k * wg_size;
-        shared[idx] = monty_mul::<P>(input[idx], n_inv_value);
+        shared[idx] = monty_mul::<P>(data[idx], n_inv_value);
     }
     sync_cube();
 
@@ -151,10 +157,10 @@ pub fn ntt_monolithic_inverse<P: MontyParameters>(
         sync_cube();
     }
 
-    // -- Store: shared → output --
+    // -- Store: shared → data (in-place) --
     #[unroll]
     for k in 0..loads_per_thread {
         let idx = tid + k * wg_size;
-        output[idx] = shared[idx];
+        data[idx] = shared[idx];
     }
 }
