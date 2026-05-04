@@ -303,6 +303,10 @@ fn bb_wgpu()  { check_all::<BabyBearParameters,  WgpuRuntime>([11u32, 12, 14, 16
 #[test]
 fn kb_wgpu()  { check_all::<KoalaBearParameters, WgpuRuntime>([11u32, 12, 14, 16, 20]); }
 
+// CUDA: full forward/inverse/round-trip correctness against Plonky3.
+#[test]
+fn bb_cuda()  { check_all::<BabyBearParameters,  cubecl::cuda::CudaRuntime>([11u32, 12, 14, 16, 20]); }
+
 // cubecl-cpu: one mid-size spot check. Each new log_n triggers a fresh
 // MLIR/LLVM JIT for both kernels; wgpu carries the breadth.
 #[test]
