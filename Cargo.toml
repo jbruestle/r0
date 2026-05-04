@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/r0-field",
+    "crates/r0-ntt",
 ]
 
 [workspace.package]
@@ -18,6 +19,8 @@ cubecl-core = "0.9.0"
 p3-field = "0.5.2"
 p3-baby-bear = "0.5.2"
 p3-koala-bear = "0.5.2"
+p3-dft = "0.5.2"
+p3-matrix = "0.5.2"
 
 proptest = "1.5"
 

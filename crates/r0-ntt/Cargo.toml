@@ -1,0 +1,19 @@
+[package]
+name = "r0-ntt"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+r0-field = { path = "../r0-field" }
+cubecl = { workspace = true }
+cubecl-core = { workspace = true }
+
+[dev-dependencies]
+p3-field = { workspace = true }
+p3-baby-bear = { workspace = true }
+p3-koala-bear = { workspace = true }
+p3-dft = { workspace = true }
+p3-matrix = { workspace = true }
