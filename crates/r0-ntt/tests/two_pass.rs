@@ -1,5 +1,5 @@
-//! Plonky3 oracle tests for forward NTT (unified `ntt_pass`) and
-//! inverse NTT (`intt_pass1` + `intt_pass2`).
+//! Plonky3 oracle tests for forward NTT (`ntt_pass`) and inverse NTT
+//! (`intt_pass`).
 
 use cubecl::cpu::CpuRuntime;
 use cubecl::prelude::*;
@@ -10,8 +10,7 @@ use p3_field::{PrimeField32, TwoAdicField};
 
 use r0_field::{BabyBearParameters, KoalaBearParameters, MontyField, MontyParameters};
 use r0_ntt::{
-    bit_reverse_in_place, build_inv_twiddles, build_twiddles, intt_pass1, intt_pass2, n_inv,
-    ntt_pass,
+    bit_reverse_in_place, build_inv_twiddles, build_twiddles, intt_pass, n_inv, ntt_pass,
 };
 
 trait FieldBridge: MontyParameters {
@@ -113,7 +112,7 @@ fn run_forward<P: MontyParameters, R: Runtime>(
     natural
 }
 
-// ---- Inverse runner (unchanged, uses old in-place intt_pass1/2) ----
+// ---- Inverse runner (unified intt_pass, separate in/out buffers) ----
 
 fn run_inverse<P: MontyParameters, R: Runtime>(
     device: &R::Device,
@@ -129,42 +128,95 @@ fn run_inverse<P: MontyParameters, R: Runtime>(
     let n2: usize = 1usize << log_n2;
 
     let client = R::client(device);
-    let data_h = client.create_from_slice(u32::as_bytes(natural_evals_raw));
+
+    // Pre-transpose input from natural [N2][N1] to [N1][N2] so the
+    // first inverse pass (N1 workgroups, each reading N2 contiguous
+    // elements) picks up the correct stride-N1 slabs.
+    let mut transposed_input = vec![0u32; n];
+    for i in 0..n1 {
+        for j in 0..n2 {
+            transposed_input[i * n2 + j] = natural_evals_raw[i + j * n1];
+        }
+    }
+
+    let buf_a = client.create_from_slice(u32::as_bytes(&transposed_input));
+    let buf_b = client.create_from_slice(u32::as_bytes(&vec![0u32; n]));
     let tw_h = client.create_from_slice(u32::as_bytes(inv_twiddles_raw));
     let inv_n_h = client.create_from_slice(u32::as_bytes(&[inv_n_raw]));
 
     let log_wg1 = pick_log_wg(log_n2);
     let log_wg2 = pick_log_wg(log_n1);
 
+    // Inverse pass 1: high-stride stages (descending), N⁻¹ pre-mult.
+    // buf_a → buf_b (transposed for pass 2).
     unsafe {
-        intt_pass1::launch_unchecked::<P, R>(
+        intt_pass::launch_unchecked::<P, R>(
             &client,
             CubeCount::Static(n1 as u32, 1, 1),
             CubeDim::new_1d(1u32 << log_wg1),
-            ArrayArg::from_raw_parts::<u32>(&data_h, n, 1),
+            ArrayArg::from_raw_parts::<u32>(&buf_a, n, 1),
+            ArrayArg::from_raw_parts::<u32>(&buf_b, n, 1),
+            ArrayArg::from_raw_parts::<u32>(&tw_h, n / 2, 1),
+            ArrayArg::from_raw_parts::<u32>(&inv_n_h, 1, 1),
+            log_n,
+            log_n2,
+            0u32,
+            log_wg1,
+            1u32,
+        )
+        .expect("intt_pass (first) failed");
+
+        // Inverse pass 2: low-stride stages (descending).
+        // buf_b → buf_b (final, in-place safe).
+        intt_pass::launch_unchecked::<P, R>(
+            &client,
+            CubeCount::Static(n2 as u32, 1, 1),
+            CubeDim::new_1d(1u32 << log_wg2),
+            ArrayArg::from_raw_parts::<u32>(&buf_b, n, 1),
+            ArrayArg::from_raw_parts::<u32>(&buf_b, n, 1),
             ArrayArg::from_raw_parts::<u32>(&tw_h, n / 2, 1),
             ArrayArg::from_raw_parts::<u32>(&inv_n_h, 1, 1),
             log_n,
             log_n1,
-            log_wg1,
-        )
-        .expect("intt_pass1 failed");
-
-        intt_pass2::launch_unchecked::<P, R>(
-            &client,
-            CubeCount::Static(n2 as u32, 1, 1),
-            CubeDim::new_1d(1u32 << log_wg2),
-            ArrayArg::from_raw_parts::<u32>(&data_h, n, 1),
-            ArrayArg::from_raw_parts::<u32>(&tw_h, n / 2, 1),
-            log_n,
-            log_n1,
+            log_n2,
             log_wg2,
+            1u32,
         )
-        .expect("intt_pass2 failed");
+        .expect("intt_pass (second) failed");
     }
 
-    let bytes = client.read_one(data_h);
-    u32::from_bytes(&bytes).to_vec()
+    let bytes = client.read_one(buf_b);
+    let raw_out = u32::from_bytes(&bytes).to_vec();
+
+    // The output is in [N2][N1] transposed layout (pass 1 transposes
+    // [N1 slabs of N2] → [N2][N1], pass 2 operates in-place within
+    // [N2][N1]). Un-transpose to recover natural order.
+    //
+    // Pass 1: N_pass=N2, N_other=N1.
+    //   Transposed store: output[local_idx * N1 + chunk_id]
+    //   where chunk_id ∈ [0, N1), local_idx ∈ [0, N2).
+    //   Layout: [N2][N1] (N2 rows of N1 columns).
+    //
+    // Pass 2: N_pass=N1, reads from [N2][N1] contiguously.
+    //   Workgroup wg reads row wg: [wg*N1, (wg+1)*N1).
+    //   Final pass stores in-place → stays [N2][N1].
+    //
+    // To recover natural order:
+    //   natural[row * N1 + col] where row ∈ [0, N2), col ∈ [0, N1)
+    //   corresponds to the original slab element:
+    //     slab i_low=col, position j=row → original position col + row * N1
+    //   So: natural[col + row * N1] = raw_out[row * N1 + col]
+    // Which is just: natural[i] = raw_out[(i/N1)*N1 + (i%N1)]... that's identity!
+    //
+    // Wait — that means the [N2][N1] layout IS natural order when
+    // viewed as a flat array?! No — [N2][N1] means N2 groups of N1.
+    // Position p = row * N1 + col. Natural position = col + row * N1
+    // = row * N1 + col = p. It IS the identity for the flat layout!
+    //
+    // The transpose happens at the slab level, not element level. The
+    // first pass picks up slabs (stride-N1 elements) and reassembles
+    // them contiguously. The output is already in natural memory order.
+    raw_out
 }
 
 // ---- Checks ----

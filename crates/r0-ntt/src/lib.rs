@@ -3,12 +3,10 @@
 //! Bit-reversed coefficient input → natural-order evaluation output
 //! (the design's canonical convention — see `DESIGN.md` §7).
 
-mod monolithic;
+mod inv_pass;
 mod pass;
-mod two_pass;
 mod twiddles;
 
-pub use monolithic::{ntt_monolithic, ntt_monolithic_inverse};
+pub use inv_pass::intt_pass;
 pub use pass::ntt_pass;
-pub use two_pass::{intt_pass1, intt_pass2};
 pub use twiddles::{bit_reverse_in_place, build_inv_twiddles, build_twiddles, n_inv};
