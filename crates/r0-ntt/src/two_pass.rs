@@ -130,19 +130,33 @@ pub fn ntt_pass1<P: MontyParameters>(
     }
 
     // -- Store --
-    #[unroll]
-    for zi in 0..z {
-        let block_id = super_block * z + zi;
+    if comptime!(coalesce) {
+        // Tiled transposed store: remap thread→element so that Z
+        // adjacent threads write to Z adjacent global addresses.
+        // flat_index = L * Z + zi, assigned round-robin across threads.
+        // Within a warp of 32 threads, groups of Z=8 write consecutively
+        // → 4×32-byte transactions instead of 32×4-byte scatters.
+        let stores_per_thread = comptime!((z_count as usize) * (1usize << (log_n1 - log_wg)));
+        let z_mask = comptime!((z_count as usize) - 1);
+        let log_z = comptime!(if z_count <= 1 { 0u32 } else { 31 - (z_count as u32).leading_zeros() });
+
         #[unroll]
-        for k in 0..loads_per_thread {
-            let local_idx = tid + k * wg_size;
-            if comptime!(coalesce) {
-                // Transposed: data[N1][N2] layout — pass 2 reads contiguously.
-                data[batch_offset + local_idx * n2 + block_id] =
-                    shared[zi * n1 + local_idx];
-            } else {
-                data[batch_offset + block_id * n1 + local_idx] =
-                    shared[zi * n1 + local_idx];
+        for iter in 0..stores_per_thread {
+            let flat = tid + iter * wg_size;
+            let local_idx = flat >> log_z;
+            let zi = flat & z_mask;
+            let block_id = super_block * z + zi;
+            data[batch_offset + local_idx * n2 + block_id] =
+                shared[zi * n1 + local_idx];
+        }
+    } else {
+        #[unroll]
+        for zi in 0..z {
+            let block_offset = batch_offset + (super_block * z + zi) * n1;
+            #[unroll]
+            for k in 0..loads_per_thread {
+                let local_idx = tid + k * wg_size;
+                data[block_offset + local_idx] = shared[zi * n1 + local_idx];
             }
         }
     }
