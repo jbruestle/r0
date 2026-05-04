@@ -78,6 +78,7 @@ fn run_two_pass_forward<P: MontyParameters, R: Runtime>(
             log_n,
             log_n1,
             log_wg1,
+            1u32,
         )
         .expect("ntt_pass1 launch failed");
 
@@ -90,6 +91,7 @@ fn run_two_pass_forward<P: MontyParameters, R: Runtime>(
             log_n,
             log_n1,
             log_wg2,
+            1u32,
         )
         .expect("ntt_pass2 launch failed");
     }
@@ -345,6 +347,7 @@ fn run_batched_forward<P: MontyParameters, R: Runtime>(
             log_n,
             log_n1,
             log_wg1,
+            1u32,
         )
         .expect("ntt_pass1 launch failed");
 
@@ -357,6 +360,7 @@ fn run_batched_forward<P: MontyParameters, R: Runtime>(
             log_n,
             log_n1,
             log_wg2,
+            1u32,
         )
         .expect("ntt_pass2 launch failed");
     }

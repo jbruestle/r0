@@ -50,9 +50,12 @@ use cubecl::prelude::*;
 use r0_field::{monty_add, monty_mul, monty_sub, MontyParameters};
 
 /// Pass 1: contiguous-chunk CT-DIT on `2^log_n1` elements per workgroup.
-/// Workgroup index X = chunk id, range `[0, N2)`.
-/// Workgroup index Y = batch id (grid-Y batching). Each batch is a
-/// contiguous `N`-element polynomial; batch stride = `N = 2^log_n`.
+/// Each workgroup processes `z_count` consecutive chunks, amortizing
+/// twiddle loads and barrier cost across independent slices.
+///
+/// Workgroup index X = super-chunk id, range `[0, N2/z_count)`.
+/// Workgroup index Y = batch id (grid-Y batching).
+/// Shared memory: `z_count * 2^log_n1` elements.
 /// In-place on `data`.
 #[cube(launch_unchecked)]
 pub fn ntt_pass1<P: MontyParameters>(
@@ -61,24 +64,29 @@ pub fn ntt_pass1<P: MontyParameters>(
     #[comptime] log_n: u32,
     #[comptime] log_n1: u32,
     #[comptime] log_wg: u32,
+    #[comptime] z_count: u32,
 ) {
     let n = comptime!(1usize << log_n);
     let n1 = comptime!(1usize << log_n1);
     let wg_size = comptime!(1usize << log_wg);
     let loads_per_thread = comptime!(1usize << (log_n1 - log_wg));
     let butt_per_thread = comptime!(1usize << (log_n1 - 1 - log_wg));
+    let z = comptime!(z_count as usize);
 
-    let block_id = CUBE_POS_X as usize;
+    let super_block = CUBE_POS_X as usize;
     let batch_offset = CUBE_POS_Y as usize * n;
-    let block_offset = batch_offset + block_id * n1;
-    let mut shared = SharedMemory::<u32>::new(n1);
+    let mut shared = SharedMemory::<u32>::new(z * n1);
     let tid = UNIT_POS as usize;
 
-    // -- Load: contiguous slice from data --
+    // -- Load: z_count contiguous chunks --
     #[unroll]
-    for k in 0..loads_per_thread {
-        let local_idx = tid + k * wg_size;
-        shared[local_idx] = data[block_offset + local_idx];
+    for zi in 0..z {
+        let block_offset = batch_offset + (super_block * z + zi) * n1;
+        #[unroll]
+        for k in 0..loads_per_thread {
+            let local_idx = tid + k * wg_size;
+            shared[zi * n1 + local_idx] = data[block_offset + local_idx];
+        }
     }
     sync_cube();
 
@@ -88,8 +96,6 @@ pub fn ntt_pass1<P: MontyParameters>(
         let d = comptime!(1usize << s);
         let mask_d = comptime!((1usize << s) - 1);
         let log_two_d = comptime!(s + 1);
-        // Twiddle stride in the global N-point flat table (same as the
-        // `2^(log_n − s − 1)` formula used by `ntt_monolithic`).
         let tw_step = comptime!(1usize << (log_n - s - 1));
 
         #[unroll]
@@ -100,37 +106,45 @@ pub fn ntt_pass1<P: MontyParameters>(
             let i_lo = (group << log_two_d) | j;
             let i_hi = i_lo + d;
 
+            // Twiddle is the same for all z slices — load once.
             let tw = twiddles[j * tw_step];
-            let a = shared[i_lo];
-            let b = shared[i_hi];
-            let t = monty_mul::<P>(tw, b);
-            shared[i_lo] = monty_add::<P>(a, t);
-            shared[i_hi] = monty_sub::<P>(a, t);
+
+            #[unroll]
+            for zi in 0..z {
+                let base = zi * n1;
+                let a = shared[base + i_lo];
+                let b = shared[base + i_hi];
+                let t = monty_mul::<P>(tw, b);
+                shared[base + i_lo] = monty_add::<P>(a, t);
+                shared[base + i_hi] = monty_sub::<P>(a, t);
+            }
         }
         sync_cube();
     }
 
     // -- Store --
     #[unroll]
-    for k in 0..loads_per_thread {
-        let local_idx = tid + k * wg_size;
-        data[block_offset + local_idx] = shared[local_idx];
+    for zi in 0..z {
+        let block_offset = batch_offset + (super_block * z + zi) * n1;
+        #[unroll]
+        for k in 0..loads_per_thread {
+            let local_idx = tid + k * wg_size;
+            data[block_offset + local_idx] = shared[zi * n1 + local_idx];
+        }
     }
 }
 
-/// Pass 2: strided-slab CT-DIT on `2^log_n2 = 2^(log_n - log_n1)`
-/// elements per workgroup. Workgroup index X = `i_low ∈ [0, N1)`.
+/// Pass 2: strided-slab CT-DIT on `2^log_n2` elements per workgroup.
+/// Each workgroup processes `z_count` consecutive `i_low` values,
+/// amortizing barrier cost across independent slices.
+///
+/// Workgroup index X = super-slab id, range `[0, N1/z_count)`.
 /// Workgroup index Y = batch id.
-/// The slab is `{ data[i_low + j*N1] : j ∈ 0..N2 }`. In-place on `data`.
+/// Shared memory: `z_count * 2^log_n2` elements.
 ///
-/// At pass-2-local stage `s' ∈ [0, log_n2)`, butterfly `j ∈ [0, 2^s')`,
-/// the global twiddle index is `i_low * outer_step + j * inner_step`
-/// where:
-/// - `outer_step = 2^(log_n2 - s' - 1)` (per workgroup, per stage)
-/// - `inner_step = 2^(log_n  - s' - 1)` (per stage)
-///
-/// — exactly the original-N CT-DIT twiddle for stage `log_n1 + s'`,
-/// butterfly `i_low + j*N1`.
+/// Twiddle index for each slice zi at stage s':
+///   `(base_i_low + zi) * outer_step + j * inner_step`
+/// — each slice needs its own twiddle (unlike pass 1).
 #[cube(launch_unchecked)]
 pub fn ntt_pass2<P: MontyParameters>(
     data: &mut Array<u32>,
@@ -138,6 +152,7 @@ pub fn ntt_pass2<P: MontyParameters>(
     #[comptime] log_n: u32,
     #[comptime] log_n1: u32,
     #[comptime] log_wg: u32,
+    #[comptime] z_count: u32,
 ) {
     let n = comptime!(1usize << log_n);
     let n1 = comptime!(1usize << log_n1);
@@ -146,17 +161,22 @@ pub fn ntt_pass2<P: MontyParameters>(
     let wg_size = comptime!(1usize << log_wg);
     let loads_per_thread = comptime!(1usize << (log_n - log_n1 - log_wg));
     let butt_per_thread = comptime!(1usize << (log_n - log_n1 - 1 - log_wg));
+    let z = comptime!(z_count as usize);
 
     let batch_offset = CUBE_POS_Y as usize * n;
-    let i_low = CUBE_POS_X as usize;
-    let mut shared = SharedMemory::<u32>::new(n2);
+    let base_i_low = CUBE_POS_X as usize * z;
+    let mut shared = SharedMemory::<u32>::new(z * n2);
     let tid = UNIT_POS as usize;
 
-    // -- Load: strided slab `data[batch_offset + i_low + j*N1]` for j ∈ 0..N2 --
+    // -- Load: z_count strided slabs --
     #[unroll]
-    for k in 0..loads_per_thread {
-        let local_j = tid + k * wg_size;
-        shared[local_j] = data[batch_offset + i_low + local_j * n1];
+    for zi in 0..z {
+        let i_low = base_i_low + zi;
+        #[unroll]
+        for k in 0..loads_per_thread {
+            let local_j = tid + k * wg_size;
+            shared[zi * n2 + local_j] = data[batch_offset + i_low + local_j * n1];
+        }
     }
     sync_cube();
 
@@ -168,9 +188,6 @@ pub fn ntt_pass2<P: MontyParameters>(
         let log_two_d = comptime!(s_prime + 1);
         let outer_step = comptime!(1usize << (log_n - log_n1 - s_prime - 1));
         let inner_step = comptime!(1usize << (log_n - s_prime - 1));
-        // Cache the per-workgroup, per-stage offset into the twiddle
-        // table — invariant across all butterflies within this stage.
-        let i_low_term = i_low * outer_step;
 
         #[unroll]
         for k in 0..butt_per_thread {
@@ -179,23 +196,32 @@ pub fn ntt_pass2<P: MontyParameters>(
             let j = butt_idx & mask_d;
             let i_lo = (group << log_two_d) | j;
             let i_hi = i_lo + d;
+            let j_inner = j * inner_step;
 
-            let tw_idx = i_low_term + j * inner_step;
-            let tw = twiddles[tw_idx];
-            let a = shared[i_lo];
-            let b = shared[i_hi];
-            let t = monty_mul::<P>(tw, b);
-            shared[i_lo] = monty_add::<P>(a, t);
-            shared[i_hi] = monty_sub::<P>(a, t);
+            #[unroll]
+            for zi in 0..z {
+                let tw_idx = (base_i_low + zi) * outer_step + j_inner;
+                let tw = twiddles[tw_idx];
+                let base = zi * n2;
+                let a = shared[base + i_lo];
+                let b = shared[base + i_hi];
+                let t = monty_mul::<P>(tw, b);
+                shared[base + i_lo] = monty_add::<P>(a, t);
+                shared[base + i_hi] = monty_sub::<P>(a, t);
+            }
         }
         sync_cube();
     }
 
     // -- Store: strided write back --
     #[unroll]
-    for k in 0..loads_per_thread {
-        let local_j = tid + k * wg_size;
-        data[batch_offset + i_low + local_j * n1] = shared[local_j];
+    for zi in 0..z {
+        let i_low = base_i_low + zi;
+        #[unroll]
+        for k in 0..loads_per_thread {
+            let local_j = tid + k * wg_size;
+            data[batch_offset + i_low + local_j * n1] = shared[zi * n2 + local_j];
+        }
     }
 }
 

@@ -64,6 +64,7 @@ fn forward_ntt(c: &mut Criterion) {
                     LOG_N,
                     LOG_N1,
                     LOG_WG,
+                    1u32,
                 )
                 .expect("ntt_pass1 launch failed");
 
@@ -76,6 +77,7 @@ fn forward_ntt(c: &mut Criterion) {
                     LOG_N,
                     LOG_N1,
                     LOG_WG,
+                    1u32,
                 )
                 .expect("ntt_pass2 launch failed");
             }

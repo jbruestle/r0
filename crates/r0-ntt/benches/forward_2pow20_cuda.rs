@@ -1,8 +1,8 @@
 //! Forward NTT throughput, BabyBear, log_n=20 (1M points), CUDA.
 //!
-//! Same structure as the wgpu bench but targets NVIDIA GPUs via
-//! cubecl-cuda.  Each bench iteration launches both NTT passes and
-//! syncs the GPU, so we measure actual kernel completion latency.
+//! Uses z_count=8: each workgroup processes 8 independent chunks,
+//! amortizing twiddle loads and barrier cost. Shared memory per
+//! workgroup: 8 * 1024 * 4 = 32 KiB (fits CUDA's 48 KiB default).
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use cubecl::cuda::CudaRuntime;
@@ -19,6 +19,7 @@ fn forward_ntt(c: &mut Criterion) {
     const LOG_N1: u32 = 10; // balanced split
     const LOG_N2: u32 = 10;
     const LOG_WG: u32 = 8; // 256 threads / workgroup
+    const Z: u32 = 8;
 
     let n: usize = 1usize << LOG_N;
     let n1: usize = 1usize << LOG_N1;
@@ -44,37 +45,37 @@ fn forward_ntt(c: &mut Criterion) {
     let tw_h = client.create_from_slice(u32::as_bytes(&twiddles));
 
     let mut group = c.benchmark_group("forward_ntt_bb_log_n20_cuda");
-    // Each iteration is a complete forward NTT over 2^20 = 1M points.
     group.throughput(criterion::Throughput::Elements(n as u64));
     group.bench_function("forward", |b| {
         b.iter(|| {
             unsafe {
                 ntt_pass1::launch_unchecked::<P, R>(
                     &client,
-                    CubeCount::Static(n2 as u32, 1, 1),
+                    CubeCount::Static((n2 / Z as usize) as u32, 1, 1),
                     CubeDim::new_1d(1u32 << LOG_WG),
                     ArrayArg::from_raw_parts::<u32>(&data_h, n, 1),
                     ArrayArg::from_raw_parts::<u32>(&tw_h, n / 2, 1),
                     LOG_N,
                     LOG_N1,
                     LOG_WG,
+                    Z,
                 )
                 .expect("ntt_pass1 launch failed");
 
                 ntt_pass2::launch_unchecked::<P, R>(
                     &client,
-                    CubeCount::Static(n1 as u32, 1, 1),
+                    CubeCount::Static((n1 / Z as usize) as u32, 1, 1),
                     CubeDim::new_1d(1u32 << LOG_WG),
                     ArrayArg::from_raw_parts::<u32>(&data_h, n, 1),
                     ArrayArg::from_raw_parts::<u32>(&tw_h, n / 2, 1),
                     LOG_N,
                     LOG_N1,
                     LOG_WG,
+                    Z,
                 )
                 .expect("ntt_pass2 launch failed");
             }
 
-            // Wait for both kernels to actually complete on the GPU.
             cubecl_common::reader::read_sync(client.sync()).expect("sync failed");
         });
     });

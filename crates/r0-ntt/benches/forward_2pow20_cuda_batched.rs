@@ -20,6 +20,7 @@ fn forward_ntt_batched(c: &mut Criterion) {
     const LOG_N2: u32 = 10;
     const LOG_WG: u32 = 8;
     const BATCH: usize = 100;
+    const Z: u32 = 8;
 
     let n: usize = 1usize << LOG_N;
     let n1: usize = 1usize << LOG_N1;
@@ -60,25 +61,27 @@ fn forward_ntt_batched(c: &mut Criterion) {
             unsafe {
                 ntt_pass1::launch_unchecked::<P, R>(
                     &client,
-                    CubeCount::Static(n2 as u32, BATCH as u32, 1),
+                    CubeCount::Static((n2 / Z as usize) as u32, BATCH as u32, 1),
                     CubeDim::new_1d(1u32 << LOG_WG),
                     ArrayArg::from_raw_parts::<u32>(&data_h, BATCH * n, 1),
                     ArrayArg::from_raw_parts::<u32>(&tw_h, n / 2, 1),
                     LOG_N,
                     LOG_N1,
                     LOG_WG,
+                    Z,
                 )
                 .expect("ntt_pass1 launch failed");
 
                 ntt_pass2::launch_unchecked::<P, R>(
                     &client,
-                    CubeCount::Static(n1 as u32, BATCH as u32, 1),
+                    CubeCount::Static((n1 / Z as usize) as u32, BATCH as u32, 1),
                     CubeDim::new_1d(1u32 << LOG_WG),
                     ArrayArg::from_raw_parts::<u32>(&data_h, BATCH * n, 1),
                     ArrayArg::from_raw_parts::<u32>(&tw_h, n / 2, 1),
                     LOG_N,
                     LOG_N1,
                     LOG_WG,
+                    Z,
                 )
                 .expect("ntt_pass2 launch failed");
             }
