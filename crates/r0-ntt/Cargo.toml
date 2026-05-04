@@ -31,3 +31,7 @@ harness = false
 [[bench]]
 name = "forward_2pow20_cuda_batched"
 harness = false
+
+[[bench]]
+name = "forward_2pow20_cuda_split"
+harness = false

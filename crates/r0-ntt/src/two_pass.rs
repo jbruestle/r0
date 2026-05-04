@@ -57,6 +57,11 @@ use r0_field::{monty_add, monty_mul, monty_sub, MontyParameters};
 /// Workgroup index Y = batch id (grid-Y batching).
 /// Shared memory: `z_count * 2^log_n1` elements.
 /// In-place on `data`.
+///
+/// When `coalesce` is true, the store phase writes in transposed order
+/// (`data[local_idx * N2 + block_id]` instead of `data[block_id * N1 +
+/// local_idx]`) so that pass 2 can load contiguously. The store itself
+/// is strided, but loads are more latency-sensitive than stores on GPU.
 #[cube(launch_unchecked)]
 pub fn ntt_pass1<P: MontyParameters>(
     data: &mut Array<u32>,
@@ -65,9 +70,11 @@ pub fn ntt_pass1<P: MontyParameters>(
     #[comptime] log_n1: u32,
     #[comptime] log_wg: u32,
     #[comptime] z_count: u32,
+    #[comptime] coalesce: bool,
 ) {
     let n = comptime!(1usize << log_n);
     let n1 = comptime!(1usize << log_n1);
+    let n2 = comptime!(1usize << (log_n - log_n1));
     let wg_size = comptime!(1usize << log_wg);
     let loads_per_thread = comptime!(1usize << (log_n1 - log_wg));
     let butt_per_thread = comptime!(1usize << (log_n1 - 1 - log_wg));
@@ -78,7 +85,7 @@ pub fn ntt_pass1<P: MontyParameters>(
     let mut shared = SharedMemory::<u32>::new(z * n1);
     let tid = UNIT_POS as usize;
 
-    // -- Load: z_count contiguous chunks --
+    // -- Load: z_count contiguous chunks (always row-major) --
     #[unroll]
     for zi in 0..z {
         let block_offset = batch_offset + (super_block * z + zi) * n1;
@@ -125,11 +132,18 @@ pub fn ntt_pass1<P: MontyParameters>(
     // -- Store --
     #[unroll]
     for zi in 0..z {
-        let block_offset = batch_offset + (super_block * z + zi) * n1;
+        let block_id = super_block * z + zi;
         #[unroll]
         for k in 0..loads_per_thread {
             let local_idx = tid + k * wg_size;
-            data[block_offset + local_idx] = shared[zi * n1 + local_idx];
+            if comptime!(coalesce) {
+                // Transposed: data[N1][N2] layout — pass 2 reads contiguously.
+                data[batch_offset + local_idx * n2 + block_id] =
+                    shared[zi * n1 + local_idx];
+            } else {
+                data[batch_offset + block_id * n1 + local_idx] =
+                    shared[zi * n1 + local_idx];
+            }
         }
     }
 }
@@ -145,6 +159,10 @@ pub fn ntt_pass1<P: MontyParameters>(
 /// Twiddle index for each slice zi at stage s':
 ///   `(base_i_low + zi) * outer_step + j * inner_step`
 /// — each slice needs its own twiddle (unlike pass 1).
+///
+/// When `coalesce` is true, data is in transposed [N1][N2] layout
+/// (as written by pass 1 with coalesce=true). Both load and store
+/// are contiguous: `data[i_low * N2 + j]`.
 #[cube(launch_unchecked)]
 pub fn ntt_pass2<P: MontyParameters>(
     data: &mut Array<u32>,
@@ -153,6 +171,7 @@ pub fn ntt_pass2<P: MontyParameters>(
     #[comptime] log_n1: u32,
     #[comptime] log_wg: u32,
     #[comptime] z_count: u32,
+    #[comptime] coalesce: bool,
 ) {
     let n = comptime!(1usize << log_n);
     let n1 = comptime!(1usize << log_n1);
@@ -168,19 +187,25 @@ pub fn ntt_pass2<P: MontyParameters>(
     let mut shared = SharedMemory::<u32>::new(z * n2);
     let tid = UNIT_POS as usize;
 
-    // -- Load: z_count strided slabs --
+    // -- Load: z_count slabs --
     #[unroll]
     for zi in 0..z {
         let i_low = base_i_low + zi;
         #[unroll]
         for k in 0..loads_per_thread {
             let local_j = tid + k * wg_size;
-            shared[zi * n2 + local_j] = data[batch_offset + i_low + local_j * n1];
+            if comptime!(coalesce) {
+                // Transposed layout: data[i_low * N2 + j] — contiguous.
+                shared[zi * n2 + local_j] = data[batch_offset + i_low * n2 + local_j];
+            } else {
+                // Original layout: data[i_low + j * N1] — strided.
+                shared[zi * n2 + local_j] = data[batch_offset + i_low + local_j * n1];
+            }
         }
     }
     sync_cube();
 
-    // -- Stages s' = 0..log_n2, stride 2^s' --
+    // -- Stages s' = 0..log_n2, stride 2^s' (same regardless of layout) --
     #[unroll]
     for s_prime in 0..log_n2 {
         let d = comptime!(1usize << s_prime);
@@ -213,14 +238,20 @@ pub fn ntt_pass2<P: MontyParameters>(
         sync_cube();
     }
 
-    // -- Store: strided write back --
+    // -- Store --
     #[unroll]
     for zi in 0..z {
         let i_low = base_i_low + zi;
         #[unroll]
         for k in 0..loads_per_thread {
             let local_j = tid + k * wg_size;
-            data[batch_offset + i_low + local_j * n1] = shared[zi * n2 + local_j];
+            if comptime!(coalesce) {
+                // Transposed layout: contiguous store.
+                data[batch_offset + i_low * n2 + local_j] = shared[zi * n2 + local_j];
+            } else {
+                // Original layout: strided store.
+                data[batch_offset + i_low + local_j * n1] = shared[zi * n2 + local_j];
+            }
         }
     }
 }
