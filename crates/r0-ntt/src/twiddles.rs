@@ -1,25 +1,64 @@
-//! Host-side twiddle precomputation and bit-reversal permutation.
+//! Host-side twiddle precomputation, bit-reversal, and field-elem helpers.
 
 use r0_field::{MontyField, MontyParameters};
 
-/// Build a flat twiddle table `[ω^0, ω^1, …, ω^(N/2 − 1)]` in Montgomery
-/// form, where `ω` is a primitive `N`-th root of unity (`N = 2^log_n`).
-///
-/// For `log_n == 0` returns an empty vector.
+/// Square-and-multiply exponentiation in `MontyField<P>`.
+fn pow_field<P: MontyParameters>(mut base: MontyField<P>, mut exp: u32) -> MontyField<P> {
+    let mut acc = MontyField::<P>::from_canonical(1);
+    while exp > 0 {
+        if exp & 1 == 1 {
+            acc = acc * base;
+        }
+        base = base * base;
+        exp >>= 1;
+    }
+    acc
+}
+
+/// Build a flat forward-twiddle table `[ω^0, ω^1, …, ω^(N/2 − 1)]` in
+/// Montgomery form, where `ω` is a primitive `N`-th root of unity
+/// (`N = 2^log_n`). For `log_n == 0` returns an empty vector.
 pub fn build_twiddles<P: MontyParameters>(log_n: u32) -> Vec<u32> {
     if log_n == 0 {
         return Vec::new();
     }
     let half = 1usize << (log_n - 1);
-    let omega =
-        MontyField::<P>::from_canonical(P::TWO_ADIC_GENERATORS[log_n as usize]);
-    let mut twiddles = Vec::with_capacity(half);
+    let omega = MontyField::<P>::from_canonical(P::TWO_ADIC_GENERATORS[log_n as usize]);
+    let mut out = Vec::with_capacity(half);
     let mut current = MontyField::<P>::from_canonical(1);
     for _ in 0..half {
-        twiddles.push(current.raw());
+        out.push(current.raw());
         current = current * omega;
     }
-    twiddles
+    out
+}
+
+/// Build a flat inverse-twiddle table `[ω^{-0}, ω^{-1}, …, ω^{-(N/2−1)}]`
+/// in Montgomery form. Used by the GS-DIF inverse kernel.
+pub fn build_inv_twiddles<P: MontyParameters>(log_n: u32) -> Vec<u32> {
+    if log_n == 0 {
+        return Vec::new();
+    }
+    let half = 1usize << (log_n - 1);
+    let omega = MontyField::<P>::from_canonical(P::TWO_ADIC_GENERATORS[log_n as usize]);
+    // ω^{-1} = ω^{N - 1} since ω^N = 1.
+    let inv_omega = pow_field::<P>(omega, (1u32 << log_n) - 1);
+    let mut out = Vec::with_capacity(half);
+    let mut current = MontyField::<P>::from_canonical(1);
+    for _ in 0..half {
+        out.push(current.raw());
+        current = current * inv_omega;
+    }
+    out
+}
+
+/// `N^{-1} mod p` in Montgomery form, where `N = 2^log_n`.
+/// Used by the inverse NTT kernel as a load-time scaling factor.
+pub fn n_inv<P: MontyParameters>(log_n: u32) -> u32 {
+    let n = 1u32 << log_n;
+    let n_field = MontyField::<P>::from_canonical(n);
+    // Fermat: N^{-1} = N^{p-2} mod p.
+    pow_field::<P>(n_field, P::PRIME - 2).raw()
 }
 
 /// In-place bit-reversal permutation of a power-of-two-sized slice.

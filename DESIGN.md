@@ -351,28 +351,35 @@ Following sppark's narrow kernel (`ct_mixed_radix_narrow.cu:5-183`):
    passes.
 5. **Store**: coalesced write back to global.
 
-### 5.3 One butterfly, not two
+### 5.3 Two butterfly forms — algebraic inverses
 
-The radix-2 NTT butterfly is `(a, b, ω) → (a + ω·b, a − ω·b)`. The same
-butterfly performs both forward and inverse — the only differences are
-two `comptime` knobs:
+We need two butterfly variants — one each direction — because they are
+*algebraic inverses*, not the same operation with knobs. Earlier
+versions of this section claimed otherwise; that claim was wrong. The
+correction, verified by hand-tracing N=4 and confirmed against sppark
+(which also ships both `CT_NTT` and `GS_NTT`):
 
-- **Twiddle inversion**: forward uses `ω^k`, inverse uses `ω^{-k}`
-  (drawn from a separate inverse-twiddle table).
-- **Stage iteration direction**: forward goes large-stride → small
-  (stride `N/2, N/4, …, 1`), which produces natural-order output from
-  bit-reversed input; inverse goes small-stride → large (stride
-  `1, 2, …, N/2`), which produces bit-reversed output from natural
-  input. Plus a final scaling by `N⁻¹`.
+- **Forward (CT-DIT)**: butterfly `(a, b, ω) → (a + ω·b, a − ω·b)`,
+  stages with **ascending stride** (`1, 2, …, N/2`), forward twiddles
+  `ω^k`. Bit-rev input → natural output.
 
-This is enough. We do not implement a separate Gentleman–Sande (DIF)
-butterfly. sppark ships both CT and GS because it supports four I/O
-orderings (NN/NR/RN/RR) and wants to fuse bit-reversal into one of the
-outer kernels for each — with §7's single-order convention there is
-nothing to choose between, so a second butterfly form would be dead
-code. The Plonky3 codebase makes the same simplification on the CPU
-side: `Radix2Dit` (`radix_2_dit.rs`) is the workhorse and `Radix2Bowers`
-exists only as a niche cache-locality variant.
+- **Inverse (GS-DIF)**: butterfly `(a, b, ω) → (a + b, (a − b)·ω)`,
+  stages with **descending stride** (`N/2, …, 1`), inverse twiddles
+  `ω^{-k}`, plus an `×N⁻¹` scaling absorbed into the kernel by
+  pre-multiplying the natural-evaluation input with `N⁻¹`. Natural
+  input → bit-rev output.
+
+Why these are inverses: running the CT-DIT graph backward is equivalent
+to applying GS-DIF butterflies in reverse stage order. The `(a+ω·b, a−ω·b)`
+butterfly's algebraic inverse is `((s+d)/2, (s−d)/(2ω))`. With `1/2`s
+folded out to `×N⁻¹` at the end and a substitution `ω → ω⁻¹`, this
+becomes exactly `(s+d, (s−d)·ω⁻¹)` — the GS-DIF form with inverse
+twiddles.
+
+Practical consequence: two `#[cube]` kernels, one each, with mostly
+shared infrastructure (workgroup memory, comptime stage decomposition,
+indexing). Per the §7 single-order convention they're each their
+direction's only kernel — no NN/NR/RN/RR matrix.
 
 ## 6. Twiddle factors
 

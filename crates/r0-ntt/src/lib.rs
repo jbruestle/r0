@@ -7,5 +7,5 @@
 mod monolithic;
 mod twiddles;
 
-pub use monolithic::ntt_monolithic;
-pub use twiddles::{bit_reverse_in_place, build_twiddles};
+pub use monolithic::{ntt_monolithic, ntt_monolithic_inverse};
+pub use twiddles::{bit_reverse_in_place, build_inv_twiddles, build_twiddles, n_inv};
