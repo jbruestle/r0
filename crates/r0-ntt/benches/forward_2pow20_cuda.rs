@@ -1,31 +1,29 @@
 //! Forward NTT throughput, BabyBear, log_n=20 (1M points), CUDA.
 //!
-//! Uses z_count=8: each workgroup processes 8 independent chunks,
-//! amortizing twiddle loads and barrier cost. Shared memory per
-//! workgroup: 8 * 1024 * 4 = 32 KiB (fits CUDA's 48 KiB default).
+//! Uses z_count=8 with separate in/out buffers for the transposed
+//! inter-pass layout. Ping-pongs between buf_a and buf_b.
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use cubecl::cuda::CudaRuntime;
 use cubecl::prelude::*;
 
 use r0_field::{BabyBearParameters, MontyField, MontyParameters};
-use r0_ntt::{bit_reverse_in_place, build_twiddles, ntt_pass1, ntt_pass2};
+use r0_ntt::{bit_reverse_in_place, build_twiddles, ntt_pass};
 
 fn forward_ntt(c: &mut Criterion) {
     type P = BabyBearParameters;
     type R = CudaRuntime;
 
     const LOG_N: u32 = 20;
-    const LOG_N1: u32 = 10; // balanced split
+    const LOG_N1: u32 = 10;
     const LOG_N2: u32 = 10;
-    const LOG_WG: u32 = 8; // 256 threads / workgroup
+    const LOG_WG: u32 = 8;
     const Z: u32 = 8;
 
     let n: usize = 1usize << LOG_N;
     let n1: usize = 1usize << LOG_N1;
     let n2: usize = 1usize << LOG_N2;
 
-    // ---- One-time setup: deterministic input + Montgomery + bit-rev ----
     let canonical: Vec<u32> = (0..n as u32)
         .map(|i| (i.wrapping_mul(0x9E3779B1) ^ 0xDEADBEEF) % P::PRIME)
         .collect();
@@ -37,11 +35,11 @@ fn forward_ntt(c: &mut Criterion) {
     let input_raw: Vec<u32> = input_field.iter().map(|f| f.raw()).collect();
     let twiddles = build_twiddles::<P>(LOG_N);
 
-    // ---- Persistent device buffers ----
     let device = <R as Runtime>::Device::default();
     let client = R::client(&device);
 
-    let data_h = client.create_from_slice(u32::as_bytes(&input_raw));
+    let buf_a = client.create_from_slice(u32::as_bytes(&input_raw));
+    let buf_b = client.create_from_slice(u32::as_bytes(&vec![0u32; n]));
     let tw_h = client.create_from_slice(u32::as_bytes(&twiddles));
 
     let mut group = c.benchmark_group("forward_ntt_bb_log_n20_cuda");
@@ -49,33 +47,37 @@ fn forward_ntt(c: &mut Criterion) {
     group.bench_function("forward", |b| {
         b.iter(|| {
             unsafe {
-                ntt_pass1::launch_unchecked::<P, R>(
+                // Pass 1: buf_a → buf_b (transposed)
+                ntt_pass::launch_unchecked::<P, R>(
                     &client,
                     CubeCount::Static((n2 / Z as usize) as u32, 1, 1),
                     CubeDim::new_1d(1u32 << LOG_WG),
-                    ArrayArg::from_raw_parts::<u32>(&data_h, n, 1),
+                    ArrayArg::from_raw_parts::<u32>(&buf_a, n, 1),
+                    ArrayArg::from_raw_parts::<u32>(&buf_b, n, 1),
                     ArrayArg::from_raw_parts::<u32>(&tw_h, n / 2, 1),
                     LOG_N,
                     LOG_N1,
+                    0u32,
                     LOG_WG,
                     Z,
-                    true,
                 )
-                .expect("ntt_pass1 launch failed");
+                .expect("ntt_pass (first) failed");
 
-                ntt_pass2::launch_unchecked::<P, R>(
+                // Pass 2: buf_b → buf_b (final, in-place)
+                ntt_pass::launch_unchecked::<P, R>(
                     &client,
                     CubeCount::Static((n1 / Z as usize) as u32, 1, 1),
                     CubeDim::new_1d(1u32 << LOG_WG),
-                    ArrayArg::from_raw_parts::<u32>(&data_h, n, 1),
+                    ArrayArg::from_raw_parts::<u32>(&buf_b, n, 1),
+                    ArrayArg::from_raw_parts::<u32>(&buf_b, n, 1),
                     ArrayArg::from_raw_parts::<u32>(&tw_h, n / 2, 1),
                     LOG_N,
+                    LOG_N2,
                     LOG_N1,
                     LOG_WG,
                     Z,
-                    true,
                 )
-                .expect("ntt_pass2 launch failed");
+                .expect("ntt_pass (second) failed");
             }
 
             cubecl_common::reader::read_sync(client.sync()).expect("sync failed");

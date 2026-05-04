@@ -1,14 +1,11 @@
 //! Per-pass forward NTT timing, BabyBear, log_n=20, CUDA.
-//!
-//! Benchmarks pass1 and pass2 independently so we can see where time
-//! is spent. Uses z_count=8 to match the combined benchmark.
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use cubecl::cuda::CudaRuntime;
 use cubecl::prelude::*;
 
 use r0_field::{BabyBearParameters, MontyField, MontyParameters};
-use r0_ntt::{bit_reverse_in_place, build_twiddles, ntt_pass1, ntt_pass2};
+use r0_ntt::{bit_reverse_in_place, build_twiddles, ntt_pass};
 
 fn forward_ntt_split(c: &mut Criterion) {
     type P = BabyBearParameters;
@@ -38,51 +35,52 @@ fn forward_ntt_split(c: &mut Criterion) {
     let device = <R as Runtime>::Device::default();
     let client = R::client(&device);
 
-    let data_h = client.create_from_slice(u32::as_bytes(&input_raw));
+    let buf_a = client.create_from_slice(u32::as_bytes(&input_raw));
+    let buf_b = client.create_from_slice(u32::as_bytes(&vec![0u32; n]));
     let tw_h = client.create_from_slice(u32::as_bytes(&twiddles));
 
     let mut group = c.benchmark_group("forward_ntt_bb_log_n20_cuda_split");
     group.throughput(criterion::Throughput::Elements(n as u64));
 
-    // ---- Pass 1 only: contiguous chunks ----
     group.bench_function("pass1_only", |b| {
         b.iter(|| {
             unsafe {
-                ntt_pass1::launch_unchecked::<P, R>(
+                ntt_pass::launch_unchecked::<P, R>(
                     &client,
                     CubeCount::Static((n2 / Z as usize) as u32, 1, 1),
                     CubeDim::new_1d(1u32 << LOG_WG),
-                    ArrayArg::from_raw_parts::<u32>(&data_h, n, 1),
+                    ArrayArg::from_raw_parts::<u32>(&buf_a, n, 1),
+                    ArrayArg::from_raw_parts::<u32>(&buf_b, n, 1),
                     ArrayArg::from_raw_parts::<u32>(&tw_h, n / 2, 1),
                     LOG_N,
                     LOG_N1,
+                    0u32,
                     LOG_WG,
                     Z,
-                    true,
                 )
-                .expect("ntt_pass1 launch failed");
+                .expect("pass1 failed");
             }
             cubecl_common::reader::read_sync(client.sync()).expect("sync failed");
         });
     });
 
-    // ---- Pass 2 only: strided slabs ----
     group.bench_function("pass2_only", |b| {
         b.iter(|| {
             unsafe {
-                ntt_pass2::launch_unchecked::<P, R>(
+                ntt_pass::launch_unchecked::<P, R>(
                     &client,
                     CubeCount::Static((n1 / Z as usize) as u32, 1, 1),
                     CubeDim::new_1d(1u32 << LOG_WG),
-                    ArrayArg::from_raw_parts::<u32>(&data_h, n, 1),
+                    ArrayArg::from_raw_parts::<u32>(&buf_b, n, 1),
+                    ArrayArg::from_raw_parts::<u32>(&buf_b, n, 1),
                     ArrayArg::from_raw_parts::<u32>(&tw_h, n / 2, 1),
                     LOG_N,
+                    LOG_N2,
                     LOG_N1,
                     LOG_WG,
                     Z,
-                    true,
                 )
-                .expect("ntt_pass2 launch failed");
+                .expect("pass2 failed");
             }
             cubecl_common::reader::read_sync(client.sync()).expect("sync failed");
         });
