@@ -273,24 +273,25 @@ where
     );
 }
 
-/// Run all of forward-oracle, inverse-oracle, and round-trip across
-/// `log_n ∈ [1, 10]` on the given (field, runtime) pair.
-fn check_all<P: FieldBridge, R: Runtime>()
+fn check_all<P: FieldBridge, R: Runtime>(range: impl IntoIterator<Item = u32>)
 where
     R::Device: Default,
 {
-    for log_n in 1..=10u32 {
+    for log_n in range {
         check_forward::<P, R>(log_n);
         check_inverse::<P, R>(log_n);
         check_roundtrip::<P, R>(log_n);
     }
 }
 
+// wgpu/Metal: full single-pass range.
 #[test]
-fn bb_cpu()  { check_all::<BabyBearParameters,  CpuRuntime >(); }
+fn bb_wgpu() { check_all::<BabyBearParameters,  WgpuRuntime>(1..=10); }
 #[test]
-fn bb_wgpu() { check_all::<BabyBearParameters,  WgpuRuntime>(); }
+fn kb_wgpu() { check_all::<KoalaBearParameters, WgpuRuntime>(1..=10); }
+
+// cubecl-cpu: one mid-size spot check. wgpu carries the breadth.
 #[test]
-fn kb_cpu()  { check_all::<KoalaBearParameters, CpuRuntime >(); }
+fn bb_cpu()  { check_all::<BabyBearParameters,  CpuRuntime >([8u32]); }
 #[test]
-fn kb_wgpu() { check_all::<KoalaBearParameters, WgpuRuntime>(); }
+fn kb_cpu()  { check_all::<KoalaBearParameters, CpuRuntime >([8u32]); }

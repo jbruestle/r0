@@ -9,5 +9,5 @@ mod two_pass;
 mod twiddles;
 
 pub use monolithic::{ntt_monolithic, ntt_monolithic_inverse};
-pub use two_pass::{ntt_pass1, ntt_pass2};
+pub use two_pass::{intt_pass1, intt_pass2, ntt_pass1, ntt_pass2};
 pub use twiddles::{bit_reverse_in_place, build_inv_twiddles, build_twiddles, n_inv};
