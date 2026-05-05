@@ -71,14 +71,14 @@ pub fn n_inv<P: MontyParameters>(log_n: u32) -> u32 {
 // partial[w][i] = omega^(i * 2^(w * LG_WINDOW))
 
 /// Window size exponent for partial twiddle tables.
-pub const LG_WINDOW: u32 = 6;
+pub const LG_WINDOW: u32 = 10;
 /// Window size (number of entries per window).
-pub const WINDOW_SIZE: usize = 1 << LG_WINDOW; // 64
+pub const WINDOW_SIZE: usize = 1 << LG_WINDOW; // 1024
 /// Number of windows. Covers up to 30 bits of exponent (sufficient for
 /// BabyBear S=27 and KoalaBear S=24).
-pub const NUM_WINDOWS: usize = 5;
+pub const NUM_WINDOWS: usize = 3;
 /// Total number of entries in a partial twiddle table.
-pub const PARTIAL_TWIDDLE_LEN: usize = NUM_WINDOWS * WINDOW_SIZE; // 320
+pub const PARTIAL_TWIDDLE_LEN: usize = NUM_WINDOWS * WINDOW_SIZE; // 3072
 
 /// Build a forward partial twiddle table for the given `log_n`.
 ///
@@ -226,13 +226,12 @@ mod tests {
 /// Host-side reconstruction of w^k from a partial twiddle table (for testing).
 /// The kernel does this same computation on-device.
 pub fn reconstruct_twiddle<P: MontyParameters>(partial: &[u32], k: u32) -> u32 {
-    let mut acc = MontyField::<P>::from_canonical(1);
-    for w in 0..NUM_WINDOWS {
+    let k_0 = (k & (WINDOW_SIZE as u32 - 1)) as usize;
+    let mut acc = MontyField::<P>::from_raw(partial[k_0]);
+    for w in 1..NUM_WINDOWS {
         let k_w = ((k >> (w as u32 * LG_WINDOW)) & (WINDOW_SIZE as u32 - 1)) as usize;
-        if k_w != 0 {
-            let entry = MontyField::<P>::from_raw(partial[w * WINDOW_SIZE + k_w]);
-            acc = acc * entry;
-        }
+        let entry = MontyField::<P>::from_raw(partial[w * WINDOW_SIZE + k_w]);
+        acc = acc * entry;
     }
     acc.raw()
 }

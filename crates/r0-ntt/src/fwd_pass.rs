@@ -27,21 +27,21 @@ fn reconstruct_twiddle<P: MontyParameters>(
     k: u32,
     #[comptime] num_windows: u32,
 ) -> u32 {
-    let lg_window = comptime!(6u32);
-    let window_mask = comptime!((1u32 << 6) - 1);
-    let window_size = comptime!(64usize);
+    let lg_window = comptime!(10u32);
+    let window_mask = comptime!((1u32 << 10) - 1);
+    let window_size = comptime!(1024usize);
 
-    // Start with identity (partial[0][0] = 1 in monty form).
-    let mut acc = partial_twiddles[0usize]; // monty(1)
+    // Start with window 0's entry (avoids an extra multiply vs starting at 1).
+    let k_0 = k & window_mask;
+    let mut acc = partial_twiddles[k_0 as usize];
 
+    // Remaining windows: branchless multiply. partial[w][0] = monty(1) = identity.
+    // The 12 KiB table fits in L1 cache, so global reads are fast.
     #[unroll]
-    for w in 0..num_windows {
+    for w in 1..num_windows {
         let k_w = (k >> (w * lg_window)) & window_mask;
         let idx = comptime!(w as usize) * window_size + k_w as usize;
-        let entry = partial_twiddles[idx];
-        if k_w != 0u32 {
-            acc = monty_mul::<P>(acc, entry);
-        }
+        acc = monty_mul::<P>(acc, partial_twiddles[idx]);
     }
     acc
 }
@@ -79,22 +79,21 @@ pub fn ntt_fwd_pass<P: MontyParameters>(
     let loads_per_thread = comptime!(1usize << (log_pass - log_wg));
     let butt_per_thread = comptime!(1usize << (log_pass - 1 - log_wg));
     let z = comptime!(z_count as usize);
-    let transpose_out = comptime!(stage_offset + log_pass < log_n);
 
     // log_remaining = stages after this pass = log_n - stage_offset - log_pass.
     // For middle passes this is > 0; for the final pass it's 0.
     let log_remaining = comptime!(log_n - stage_offset - log_pass);
 
-    // Number of windows needed for reconstruction (could be fewer for
-    // small log_n, but 5 covers all cases up to 30-bit exponents).
-    let num_windows = comptime!(5u32);
+    // Number of windows needed: ceil((log_n - 1) / 10). Max exponent is
+    // N/2 - 1 = 2^(log_n-1) - 1, which has log_n-1 bits.
+    let num_windows = comptime!(((log_n + 8) / 10).max(1));
 
     let super_block = CUBE_POS_X as usize;
     let batch_offset = CUBE_POS_Y as usize * n;
     let mut shared = SharedMemory::<u32>::new(z * n_pass);
     let tid = UNIT_POS as usize;
 
-    // -- Load ----------------------------------------------------------
+    // -- Load NTT data -------------------------------------------------
     #[unroll]
     for zi in 0..z {
         let slab_base = batch_offset + (super_block * z + zi) * n_pass;
@@ -154,32 +153,26 @@ pub fn ntt_fwd_pass<P: MontyParameters>(
         sync_cube();
     }
 
-    // -- Store ---------------------------------------------------------
-    if comptime!(transpose_out) {
-        // Non-final pass: tiled transposed store into `output`.
-        let stores_per_thread = comptime!((z_count as usize) * (1usize << (log_pass - log_wg)));
-        let z_mask = comptime!((z_count as usize) - 1);
-        let log_z = comptime!(if z_count <= 1 { 0u32 } else { 31 - (z_count as u32).leading_zeros() });
+    // -- Store (always transposed) ----------------------------------------
+    //
+    // Tiled transposed store: output[local_idx * N_other + chunk_id].
+    // For multi-pass: creates the layout the next pass loads contiguously.
+    // For the final pass: this IS the natural output order (since
+    // N_other = N/N_pass and the position wg + j*N_other = natural position).
+    // For single-pass (N_other=1): degenerates to contiguous (identity).
+    //
+    // Z adjacent threads write to Z adjacent addresses for coalescing.
+    let stores_per_thread = comptime!((z_count as usize) * (1usize << (log_pass - log_wg)));
+    let z_mask = comptime!((z_count as usize) - 1);
+    let log_z = comptime!(if z_count <= 1 { 0u32 } else { 31 - (z_count as u32).leading_zeros() });
 
-        #[unroll]
-        for iter in 0..stores_per_thread {
-            let flat = tid + iter * wg_size;
-            let local_idx = flat >> log_z;
-            let zi = flat & z_mask;
-            let chunk_id = super_block * z + zi;
-            output[batch_offset + local_idx * n_other + chunk_id] =
-                shared[zi * n_pass + local_idx];
-        }
-    } else {
-        // Final pass: contiguous store into `output`.
-        #[unroll]
-        for zi in 0..z {
-            let slab_base = batch_offset + (super_block * z + zi) * n_pass;
-            #[unroll]
-            for k in 0..loads_per_thread {
-                let local_idx = tid + k * wg_size;
-                output[slab_base + local_idx] = shared[zi * n_pass + local_idx];
-            }
-        }
+    #[unroll]
+    for iter in 0..stores_per_thread {
+        let flat = tid + iter * wg_size;
+        let local_idx = flat >> log_z;
+        let zi = flat & z_mask;
+        let chunk_id = super_block * z + zi;
+        output[batch_offset + local_idx * n_other + chunk_id] =
+            shared[zi * n_pass + local_idx];
     }
 }

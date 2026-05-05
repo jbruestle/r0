@@ -5,7 +5,7 @@ use cubecl::cuda::CudaRuntime;
 use cubecl::prelude::*;
 
 use r0_field::{BabyBearParameters, MontyField, MontyParameters};
-use r0_ntt::{bit_reverse_in_place, build_fwd_twiddles, ntt_fwd_pass};
+use r0_ntt::{bit_reverse_in_place, build_partial_fwd_twiddles, ntt_fwd_pass, PARTIAL_TWIDDLE_LEN};
 
 fn forward_ntt_split(c: &mut Criterion) {
     type P = BabyBearParameters;
@@ -30,14 +30,14 @@ fn forward_ntt_split(c: &mut Criterion) {
         .collect();
     bit_reverse_in_place(&mut input_field);
     let input_raw: Vec<u32> = input_field.iter().map(|f| f.raw()).collect();
-    let twiddles = build_fwd_twiddles::<P>(LOG_N);
+    let partial_twiddles = build_partial_fwd_twiddles::<P>(LOG_N);
 
     let device = <R as Runtime>::Device::default();
     let client = R::client(&device);
 
     let buf_a = client.create_from_slice(u32::as_bytes(&input_raw));
     let buf_b = client.create_from_slice(u32::as_bytes(&vec![0u32; n]));
-    let tw_h = client.create_from_slice(u32::as_bytes(&twiddles));
+    let tw_h = client.create_from_slice(u32::as_bytes(&partial_twiddles));
 
     let mut group = c.benchmark_group("forward_ntt_bb_log_n20_cuda_split");
     group.throughput(criterion::Throughput::Elements(n as u64));
@@ -51,7 +51,7 @@ fn forward_ntt_split(c: &mut Criterion) {
                     CubeDim::new_1d(1u32 << LOG_WG),
                     ArrayArg::from_raw_parts::<u32>(&buf_a, n, 1),
                     ArrayArg::from_raw_parts::<u32>(&buf_b, n, 1),
-                    ArrayArg::from_raw_parts::<u32>(&tw_h, n / 2, 1),
+                    ArrayArg::from_raw_parts::<u32>(&tw_h, PARTIAL_TWIDDLE_LEN, 1),
                     LOG_N,
                     LOG_N1,
                     0u32,
@@ -72,8 +72,8 @@ fn forward_ntt_split(c: &mut Criterion) {
                     CubeCount::Static((n1 / Z as usize) as u32, 1, 1),
                     CubeDim::new_1d(1u32 << LOG_WG),
                     ArrayArg::from_raw_parts::<u32>(&buf_b, n, 1),
-                    ArrayArg::from_raw_parts::<u32>(&buf_b, n, 1),
-                    ArrayArg::from_raw_parts::<u32>(&tw_h, n / 2, 1),
+                    ArrayArg::from_raw_parts::<u32>(&buf_a, n, 1),
+                    ArrayArg::from_raw_parts::<u32>(&tw_h, PARTIAL_TWIDDLE_LEN, 1),
                     LOG_N,
                     LOG_N2,
                     LOG_N1,

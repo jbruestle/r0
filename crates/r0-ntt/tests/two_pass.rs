@@ -66,7 +66,7 @@ fn run_forward<P: MontyParameters, R: Runtime>(
     let log_wg2 = pick_log_wg(log_n2);
 
     unsafe {
-        // Pass 1: buf_a -> buf_b (transposed, since non-final)
+        // Pass 1: buf_a -> buf_b (transposed store)
         ntt_fwd_pass::launch_unchecked::<P, R>(
             &client,
             CubeCount::Static(n2 as u32, 1, 1),
@@ -82,13 +82,13 @@ fn run_forward<P: MontyParameters, R: Runtime>(
         )
         .expect("ntt_fwd_pass (first) failed");
 
-        // Pass 2: buf_b -> buf_b (final, in-place safe)
+        // Pass 2: buf_b -> buf_a (transposed store → natural output)
         ntt_fwd_pass::launch_unchecked::<P, R>(
             &client,
             CubeCount::Static(n1 as u32, 1, 1),
             CubeDim::new_1d(1u32 << log_wg2),
             ArrayArg::from_raw_parts::<u32>(&buf_b, n, 1),
-            ArrayArg::from_raw_parts::<u32>(&buf_b, n, 1),
+            ArrayArg::from_raw_parts::<u32>(&buf_a, n, 1),
             ArrayArg::from_raw_parts::<u32>(&tw_h, PARTIAL_TWIDDLE_LEN, 1),
             log_n,
             log_n2,
@@ -99,18 +99,9 @@ fn run_forward<P: MontyParameters, R: Runtime>(
         .expect("ntt_fwd_pass (second) failed");
     }
 
-    let bytes = client.read_one(buf_b);
-    let transposed = u32::from_bytes(&bytes).to_vec();
-
-    // Un-transpose: the output is in [N1][N2] layout.
-    // natural[i_low + j * N1] = transposed[i_low * N2 + j]
-    let mut natural = vec![0u32; n];
-    for i_low in 0..n1 {
-        for j in 0..n2 {
-            natural[i_low + j * n1] = transposed[i_low * n2 + j];
-        }
-    }
-    natural
+    // Output is in buf_a, directly in natural order. No host transpose.
+    let bytes = client.read_one(buf_a);
+    u32::from_bytes(&bytes).to_vec()
 }
 
 // ---- Inverse runner (unified ntt_inv_pass, separate in/out buffers) ----
@@ -130,17 +121,9 @@ fn run_inverse<P: MontyParameters, R: Runtime>(
 
     let client = R::client(device);
 
-    // Pre-transpose input from natural [N2][N1] to [N1][N2] so the
-    // first inverse pass (N1 workgroups, each reading N2 contiguous
-    // elements) picks up the correct stride-N1 slabs.
-    let mut transposed_input = vec![0u32; n];
-    for i in 0..n1 {
-        for j in 0..n2 {
-            transposed_input[i * n2 + j] = natural_evals_raw[i + j * n1];
-        }
-    }
-
-    let buf_a = client.create_from_slice(u32::as_bytes(&transposed_input));
+    // No pre-transpose! The kernel's transposed load gathers directly
+    // from natural-order input.
+    let buf_a = client.create_from_slice(u32::as_bytes(natural_evals_raw));
     let buf_b = client.create_from_slice(u32::as_bytes(&vec![0u32; n]));
     let tw_h = client.create_from_slice(u32::as_bytes(partial_inv_twiddles_raw));
     let inv_n_h = client.create_from_slice(u32::as_bytes(&[inv_n_raw]));
@@ -148,9 +131,9 @@ fn run_inverse<P: MontyParameters, R: Runtime>(
     let log_wg1 = pick_log_wg(log_n2);
     let log_wg2 = pick_log_wg(log_n1);
 
-    // Inverse pass 1: high-stride stages (descending), N^{-1} pre-mult.
-    // buf_a -> buf_b (transposed for pass 2).
     unsafe {
+        // Inverse pass 1: transposed load from natural input, contiguous store.
+        // buf_a -> buf_b
         ntt_inv_pass::launch_unchecked::<P, R>(
             &client,
             CubeCount::Static(n1 as u32, 1, 1),
@@ -167,14 +150,14 @@ fn run_inverse<P: MontyParameters, R: Runtime>(
         )
         .expect("ntt_inv_pass (first) failed");
 
-        // Inverse pass 2: low-stride stages (descending).
-        // buf_b -> buf_b (final, in-place safe).
+        // Inverse pass 2: transposed load from buf_b, contiguous store.
+        // buf_b -> buf_a
         ntt_inv_pass::launch_unchecked::<P, R>(
             &client,
             CubeCount::Static(n2 as u32, 1, 1),
             CubeDim::new_1d(1u32 << log_wg2),
             ArrayArg::from_raw_parts::<u32>(&buf_b, n, 1),
-            ArrayArg::from_raw_parts::<u32>(&buf_b, n, 1),
+            ArrayArg::from_raw_parts::<u32>(&buf_a, n, 1),
             ArrayArg::from_raw_parts::<u32>(&tw_h, PARTIAL_TWIDDLE_LEN, 1),
             ArrayArg::from_raw_parts::<u32>(&inv_n_h, 1, 1),
             log_n,
@@ -186,7 +169,8 @@ fn run_inverse<P: MontyParameters, R: Runtime>(
         .expect("ntt_inv_pass (second) failed");
     }
 
-    let bytes = client.read_one(buf_b);
+    // Output is in buf_a, directly in bit-reversed order. No host transpose.
+    let bytes = client.read_one(buf_a);
     u32::from_bytes(&bytes).to_vec()
 }
 
@@ -367,13 +351,13 @@ fn run_forward_3pass<P: MontyParameters, R: Runtime>(
             1u32,
         ).expect("3-pass: pass 2 failed");
 
-        // Pass 3: stages log_a+log_b..log_n, buf_a -> buf_a (final, in-place)
+        // Pass 3: stages log_a+log_b..log_n, buf_a -> buf_b (transposed store → natural)
         ntt_fwd_pass::launch_unchecked::<P, R>(
             &client,
             CubeCount::Static(n_ab as u32, 1, 1),
             CubeDim::new_1d(1u32 << log_wg_c),
             ArrayArg::from_raw_parts::<u32>(&buf_a, n, 1),
-            ArrayArg::from_raw_parts::<u32>(&buf_a, n, 1),
+            ArrayArg::from_raw_parts::<u32>(&buf_b, n, 1),
             ArrayArg::from_raw_parts::<u32>(&tw_h, PARTIAL_TWIDDLE_LEN, 1),
             log_n,
             log_c,
@@ -383,22 +367,9 @@ fn run_forward_3pass<P: MontyParameters, R: Runtime>(
         ).expect("3-pass: pass 3 failed");
     }
 
-    let raw = u32::from_bytes(&client.read_one(buf_a)).to_vec();
-
-    // The 3-pass output layout after two transposes + final contiguous store
-    // is [N_b][N_a][N_c]. Un-transpose to natural order.
-    let n_a = 1usize << log_a;
-    let n_b = 1usize << log_b;
-    let n_c = 1usize << log_c;
-    let mut natural = vec![0u32; n];
-    for m in 0..n {
-        let i_b = m / (n_a * n_c);
-        let i_a = (m / n_c) % n_a;
-        let i_c = m % n_c;
-        let p = i_a + i_b * n_a + i_c * n_a * n_b;
-        natural[p] = raw[m];
-    }
-    natural
+    // 3 passes (odd) → output in buf_b, directly in natural order.
+    let bytes = client.read_one(buf_b);
+    u32::from_bytes(&bytes).to_vec()
 }
 
 #[test]
