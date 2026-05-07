@@ -190,3 +190,29 @@ fn autotune_cuda_log20_batch32() {
         best_time
     );
 }
+
+#[cfg(feature = "wgpu")]
+#[test]
+#[ignore]
+fn autotune_wgpu_log20_batch32() {
+    type P = BabyBearParameters;
+    type R = cubecl::wgpu::WgpuRuntime;
+
+    eprintln!("\n=== Autotuning: log_n=20, batch=32, BabyBear, wgpu ===\n");
+
+    let results = autotune::<P, R>(20, 32, 3, 10, 2, None);
+    print_results(&results, 20);
+
+    let (best_plan, best_time) = &results[0];
+    eprintln!(
+        "\nBest: {:?} in {:?}",
+        best_plan.passes
+            .iter()
+            .map(|p| format!(
+                "lp={} z={} wg={}",
+                p.log_pass, p.z_count, p.log_wg
+            ))
+            .collect::<Vec<_>>(),
+        best_time
+    );
+}
