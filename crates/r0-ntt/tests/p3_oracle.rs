@@ -190,6 +190,7 @@ where
 // wgpu — BabyBear log_n 1..=24, KoalaBear spot-check at 20
 // ===========================================================================
 
+#[cfg(feature = "wgpu")]
 #[test]
 fn wgpu_bb_forward() {
     for log_n in 1..=24u32 {
@@ -197,6 +198,7 @@ fn wgpu_bb_forward() {
     }
 }
 
+#[cfg(feature = "wgpu")]
 #[test]
 fn wgpu_bb_inverse() {
     for log_n in 1..=24u32 {
@@ -204,11 +206,13 @@ fn wgpu_bb_inverse() {
     }
 }
 
+#[cfg(feature = "wgpu")]
 #[test]
 fn wgpu_kb_forward() {
     check_forward::<KoalaBearParameters, cubecl::wgpu::WgpuRuntime>(20, 1);
 }
 
+#[cfg(feature = "wgpu")]
 #[test]
 fn wgpu_kb_inverse() {
     check_inverse::<KoalaBearParameters, cubecl::wgpu::WgpuRuntime>(20, 1);
@@ -218,6 +222,7 @@ fn wgpu_kb_inverse() {
 // CUDA — BabyBear, log_n 1..=24 (includes 3-pass for 21..=24)
 // ===========================================================================
 
+#[cfg(feature = "cuda")]
 #[test]
 fn cuda_bb_forward() {
     for log_n in 1..=24u32 {
@@ -225,6 +230,7 @@ fn cuda_bb_forward() {
     }
 }
 
+#[cfg(feature = "cuda")]
 #[test]
 fn cuda_bb_inverse() {
     for log_n in 1..=24u32 {
@@ -236,12 +242,14 @@ fn cuda_bb_inverse() {
 // CPU — BabyBear, log_n=10 (CPU compilation is very slow)
 // ===========================================================================
 
+#[cfg(feature = "cpu")]
 #[test]
 #[ignore]
 fn cpu_bb_forward() {
     check_forward::<BabyBearParameters, cubecl::cpu::CpuRuntime>(10, 1);
 }
 
+#[cfg(feature = "cpu")]
 #[test]
 #[ignore]
 fn cpu_bb_inverse() {
@@ -256,6 +264,7 @@ fn cpu_bb_inverse() {
 // remainder (17, 33), multiple sub-batches (32, 100).
 // ===========================================================================
 
+#[cfg(feature = "cuda")]
 #[test]
 fn cuda_bb_roundtrip_batch_sweep() {
     for batch in [1, 2, 3, 5, 7, 16, 17, 32, 33, 100] {
@@ -263,6 +272,7 @@ fn cuda_bb_roundtrip_batch_sweep() {
     }
 }
 
+#[cfg(feature = "wgpu")]
 #[test]
 fn wgpu_bb_roundtrip_batch_sweep() {
     // wgpu has tighter buffer allocation limits than CUDA, so keep

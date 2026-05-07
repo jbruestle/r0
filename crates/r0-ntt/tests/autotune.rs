@@ -165,6 +165,7 @@ fn print_results(results: &[(NttPlan, Duration)], top_n: usize) {
     }
 }
 
+#[cfg(feature = "cuda")]
 #[test]
 #[ignore]
 fn autotune_cuda_log20_batch32() {
