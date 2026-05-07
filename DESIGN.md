@@ -239,19 +239,25 @@ processed per ping-pong iteration, bounded by scratch memory.
 
 ## 8. Performance
 
-CUDA, BabyBear, log_n=20 (1M points):
+BabyBear, log_n=20 (1M points), batch=32:
 
-| Config | Time | Notes |
-|--------|------|-------|
-| Batched 32x (ours, autotuned) | 611 µs | 19 µs/NTT, z=8/4, wg=9 |
-| Batched 32x (ours, heuristic) | 613 µs | 19 µs/NTT, z=8, wg=9 |
-| Single NTT (sppark) | 27 µs | hand-PTX, warp shuffles |
-| Batched 100x (sppark) | 2.2 ms | sequential launches |
+| Backend | Time | Per-NTT | Throughput |
+|---------|------|---------|------------|
+| CUDA (autotuned) | 611 µs | 19 µs | 54.1 Gelem/s |
+| CUDA (heuristic) | 613 µs | 19 µs | 54.0 Gelem/s |
+| Metal/wgpu (M-series Mac) | 2.29 ms | 72 µs | 14.6 Gelem/s |
+| sppark (hand-PTX) | ~860 µs* | 27 µs | — |
 
-The remaining gap vs sppark on single-NTT is:
-- PTX codegen quality (~15-25%): cubecl emits ~10 ops per monty_mul vs 6
-- Warp-shuffle butterflies: sppark exchanges via `__shfl_xor_sync` for inner
-  stages, avoiding shared memory entirely. Not yet implemented.
+\* sppark estimated from 27 µs single × 32, since it launches sequentially.
+
+**CUDA vs Metal gap (~3.7×)** is largely explained by WGSL `mul_hi`
+emulation: ~5× more ALU ops per `monty_mul` vs native CUDA `mul.hi.u32`.
+Metal MSL has native `mulhi` but cubecl currently emits WGSL for the wgpu
+backend regardless of the underlying GPU API.
+
+**CUDA vs sppark gap** on single-NTT (~32 µs vs 27 µs = 1.2×):
+- PTX codegen quality: cubecl emits ~10 ops per monty_mul vs 6
+- Warp-shuffle butterflies: sppark uses `__shfl_xor_sync` for inner stages
 
 ## 9. File layout
 
@@ -273,27 +279,34 @@ crates/r0-ntt/src/
 
 ## 10. Testing
 
-- **Single-pass oracle**: forward + inverse for log_n 1..10 against Plonky3's
-  `Radix2Dit`, both BabyBear and KoalaBear, on CPU + wgpu.
-- **Multi-pass oracle**: forward + inverse for log_n 11..20, against Plonky3,
-  on wgpu + CUDA.
-- **3-pass forward**: log_n=21, BabyBear, CUDA (exact match vs Plonky3).
-- **Executor API**: forward + roundtrip through `NttExec::forward_auto` /
-  `inverse_auto`, on wgpu + CUDA.
-- **Plan validation**: unit tests for constraint checking, heuristic properties,
-  z_count/split math (20 tests).
-- **Autotune**: full 2-pass parameter scan on CUDA (tests/autotune.rs).
-- **Unit tests**: partial twiddle reconstruction verified exhaustively against
-  flat table for all k in [0, N/2).
+All tests gated behind feature flags (`cuda`, `wgpu`, `cpu`).
+
+- **Oracle sweep** (tests/p3_oracle.rs): forward + inverse against Plonky3's
+  `Radix2Dit` for log_n 1..=24 on CUDA and wgpu, BabyBear full sweep +
+  KoalaBear spot-check at 20. Covers 1-pass, 2-pass, and 3-pass (21-24).
+- **Batch-size sweep**: roundtrip at log_n=20, batch sizes [1,2,3,5,7,16,17,
+  32,33,100] on CUDA and [1..17] on wgpu. Exercises sub_batch remainder
+  handling (sub_batch=16 with default 64 MiB scratch).
+- **CPU oracle**: forward + inverse at log_n=10 (ignored by default, slow).
+- **Plan validation**: 20 unit tests for constraint checking, heuristic
+  properties, z_count/split math, enumeration.
+- **Autotune**: full 2-pass parameter scan on CUDA and wgpu (tests/autotune.rs,
+  ignored by default).
+- **Diagnostics**: adapter enumeration and device limit dump (tests/diagnostics.rs).
+- **Twiddle unit tests**: partial twiddle reconstruction verified exhaustively
+  against flat table for all k in [0, N/2).
 
 ## 11. Future work
 
+- **WebGPU browser target**: test wgpu path in actual browser environment.
 - **Autotune persistence**: save/load best plans per (device, log_n, batch).
 - **3-pass autotune**: needs smarter search (enumeration combinatorics too
   large for exhaustive scan).
+- **Native MSL mulhi**: cubecl currently emits WGSL schoolbook emulation for
+  `mul_hi` even on Metal. Native MSL `mulhi` would close ~3× of the
+  CUDA-vs-Metal gap.
 - **Warp-shuffle butterflies**: inner 5-6 stages via `__shfl_xor_sync` on CUDA,
-  subgroup shuffles on Vulkan/Metal. Expected to close the single-NTT gap.
+  subgroup shuffles on Vulkan/Metal.
 - **Lazy reduction**: skip `final_sub` in monty_mul between chained butterflies,
   canonicalize at workgroup boundaries only.
 - **Coset-LDE**: pre/post scaling pass for STARK-style domain extension.
-- **3-pass inverse**: untested (kernel supports it, test not yet written).
