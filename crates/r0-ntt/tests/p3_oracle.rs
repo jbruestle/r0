@@ -1,25 +1,20 @@
-//! Plonky3 oracle for single-pass NTT (log_n <= 10).
+//! Correctness tests against Plonky3's Radix2Dit oracle.
 //!
-//! Uses the unified `ntt_fwd_pass` / `ntt_inv_pass` kernels with a single
-//! pass (stage_offset=0, log_pass=log_n) which is the final pass
-//! (no transpose, in-place safe).
+//! Sweeps over transform sizes (log_n 1..=24), fields (BabyBear, KoalaBear),
+//! and batch sizes. Tests forward NTT, inverse NTT, and roundtrip through
+//! the NttExec API.
 
-use cubecl::cpu::CpuRuntime;
 use cubecl::prelude::*;
-use cubecl::wgpu::WgpuRuntime;
 
 use p3_dft::{Radix2Dit, TwoAdicSubgroupDft};
 use p3_field::{PrimeField32, TwoAdicField};
 
 use r0_field::{BabyBearParameters, KoalaBearParameters, MontyField, MontyParameters};
-use r0_ntt::{
-    bit_reverse_in_place, build_partial_fwd_twiddles, build_partial_inv_twiddles,
-    ntt_inv_pass, n_inv, ntt_fwd_pass, PARTIAL_TWIDDLE_LEN,
-};
+use r0_ntt::{bit_reverse_in_place, NttExec};
 
-fn pick_log_wg(log_n: u32) -> u32 {
-    log_n.saturating_sub(1).min(8)
-}
+// ---------------------------------------------------------------------------
+// Field bridge (connects our MontyParameters to Plonky3 field types)
+// ---------------------------------------------------------------------------
 
 trait FieldBridge: MontyParameters {
     type P3: PrimeField32 + TwoAdicField + Copy;
@@ -32,6 +27,7 @@ impl FieldBridge for BabyBearParameters {
         p3_baby_bear::BabyBear::new(x)
     }
 }
+
 impl FieldBridge for KoalaBearParameters {
     type P3 = p3_koala_bear::KoalaBear;
     fn p3_from_canonical(x: u32) -> Self::P3 {
@@ -39,199 +35,239 @@ impl FieldBridge for KoalaBearParameters {
     }
 }
 
-fn run_ntt<P: MontyParameters, R: Runtime>(
-    device: &R::Device,
-    bitrev_coeffs_raw: &[u32],
-    partial_twiddles_raw: &[u32],
-    log_n: u32,
-) -> Vec<u32> {
-    let n = 1usize << log_n;
-    let log_wg = pick_log_wg(log_n);
-    let client = R::client(device);
-    let data_h = client.create_from_slice(u32::as_bytes(bitrev_coeffs_raw));
-    let tw_h = client.create_from_slice(u32::as_bytes(partial_twiddles_raw));
+// ---------------------------------------------------------------------------
+// Pseudo-random test data
+// ---------------------------------------------------------------------------
 
-    // Single pass: stage_offset=0, log_pass=log_n -> final pass, in-place.
-    unsafe {
-        ntt_fwd_pass::launch_unchecked::<P, R>(
-            &client,
-            CubeCount::Static(1, 1, 1),
-            CubeDim::new_1d(1u32 << log_wg),
-            ArrayArg::from_raw_parts::<u32>(&data_h, n, 1),
-            ArrayArg::from_raw_parts::<u32>(&data_h, n, 1),
-            ArrayArg::from_raw_parts::<u32>(&tw_h, PARTIAL_TWIDDLE_LEN, 1),
-            log_n,
-            log_n,
-            0u32,
-            log_wg,
-            1u32,
-        )
-        .expect("ntt_fwd_pass launch failed");
-    }
-
-    let bytes = client.read_one(data_h);
-    u32::from_bytes(&bytes).to_vec()
+fn pseudo_random_canonical<P: MontyParameters>(n: usize, batch_idx: usize) -> Vec<u32> {
+    (0..n as u32)
+        .map(|i| {
+            let seed = i.wrapping_mul(0x9E3779B1)
+                ^ (batch_idx as u32).wrapping_mul(0x517CC1B7)
+                ^ 0xDEADBEEF;
+            seed % P::PRIME
+        })
+        .collect()
 }
 
-fn run_intt<P: MontyParameters, R: Runtime>(
-    device: &R::Device,
-    natural_evals_raw: &[u32],
-    partial_inv_twiddles_raw: &[u32],
-    inv_n_raw: u32,
-    log_n: u32,
-) -> Vec<u32> {
-    let n = 1usize << log_n;
-    let log_wg = pick_log_wg(log_n);
-    let client = R::client(device);
-    let data_h = client.create_from_slice(u32::as_bytes(natural_evals_raw));
-    let tw_h = client.create_from_slice(u32::as_bytes(partial_inv_twiddles_raw));
-    let inv_n_h = client.create_from_slice(u32::as_bytes(&[inv_n_raw]));
+// ---------------------------------------------------------------------------
+// Oracle checks
+// ---------------------------------------------------------------------------
 
-    // Single pass: stage_offset=0, log_pass=log_n -> final pass, in-place.
-    unsafe {
-        ntt_inv_pass::launch_unchecked::<P, R>(
-            &client,
-            CubeCount::Static(1, 1, 1),
-            CubeDim::new_1d(1u32 << log_wg),
-            ArrayArg::from_raw_parts::<u32>(&data_h, n, 1),
-            ArrayArg::from_raw_parts::<u32>(&data_h, n, 1),
-            ArrayArg::from_raw_parts::<u32>(&tw_h, PARTIAL_TWIDDLE_LEN, 1),
-            ArrayArg::from_raw_parts::<u32>(&inv_n_h, 1, 1),
-            log_n,
-            log_n,
-            0u32,
-            log_wg,
-            1u32,
-        )
-        .expect("ntt_inv_pass launch failed");
-    }
-
-    let bytes = client.read_one(data_h);
-    u32::from_bytes(&bytes).to_vec()
-}
-
-fn check_forward<P: FieldBridge, R: Runtime>(log_n: u32)
+/// Check forward NTT against Plonky3 for `batch` polynomials of size 2^log_n.
+fn check_forward<P: FieldBridge, R: Runtime>(log_n: u32, batch: usize)
 where
     R::Device: Default,
 {
     let n = 1usize << log_n;
-    let canonical: Vec<u32> = (0..n as u32)
-        .map(|i| (i.wrapping_mul(0x9E3779B1) ^ 0xDEADBEEF) % P::PRIME)
-        .collect();
+    let device = R::Device::default();
+    let exec = NttExec::<P, R>::new(&device, 0);
+    let client = R::client(&device);
 
-    let p3_in: Vec<P::P3> = canonical.iter().map(|&v| P::p3_from_canonical(v)).collect();
-    let dft = Radix2Dit::<P::P3>::default();
-    let p3_out = dft.dft(p3_in);
-    let expected: Vec<u32> = p3_out.iter().map(|f| f.as_canonical_u32()).collect();
+    let mut all_input = Vec::with_capacity(batch * n);
+    let mut expected = Vec::with_capacity(batch * n);
 
-    let mut our_in_field: Vec<MontyField<P>> = canonical
-        .iter()
-        .map(|&v| MontyField::<P>::from_canonical(v))
-        .collect();
-    bit_reverse_in_place(&mut our_in_field);
-    let our_in_raw: Vec<u32> = our_in_field.iter().map(|f| f.raw()).collect();
-    let partial_twiddles = build_partial_fwd_twiddles::<P>(log_n);
+    for b in 0..batch {
+        let canonical = pseudo_random_canonical::<P>(n, b);
 
-    let actual_raw = run_ntt::<P, R>(&Default::default(), &our_in_raw, &partial_twiddles, log_n);
-    let actual: Vec<u32> = actual_raw
+        // Our input: bit-reverse the coefficients (convention: R->N).
+        let mut field: Vec<MontyField<P>> = canonical
+            .iter()
+            .map(|&v| MontyField::<P>::from_canonical(v))
+            .collect();
+        bit_reverse_in_place(&mut field);
+        all_input.extend(field.iter().map(|f| f.raw()));
+
+        // Plonky3 reference.
+        let p3_in: Vec<P::P3> = canonical.iter().map(|&v| P::p3_from_canonical(v)).collect();
+        let dft = Radix2Dit::<P::P3>::default();
+        let p3_out = dft.dft(p3_in);
+        expected.extend(p3_out.iter().map(|f| f.as_canonical_u32()));
+    }
+
+    let buf = client.create_from_slice(u32::as_bytes(&all_input));
+    exec.forward_auto(&buf, log_n, batch);
+
+    let bytes = client.read_one(buf);
+    let actual: Vec<u32> = u32::from_bytes(&bytes)
         .iter()
         .map(|&raw| MontyField::<P>::from_raw(raw).to_canonical())
         .collect();
 
     assert_eq!(
         actual, expected,
-        "forward mismatch at log_n={log_n}: first diff at {:?}",
+        "forward mismatch: log_n={log_n}, batch={batch}, first diff at {:?}",
         actual.iter().zip(expected.iter()).position(|(a, b)| a != b)
     );
 }
 
-fn check_inverse<P: FieldBridge, R: Runtime>(log_n: u32)
+/// Check inverse NTT against Plonky3 for `batch` polynomials of size 2^log_n.
+fn check_inverse<P: FieldBridge, R: Runtime>(log_n: u32, batch: usize)
 where
     R::Device: Default,
 {
     let n = 1usize << log_n;
-    let natural_evals: Vec<u32> = (0..n as u32)
-        .map(|i| (i.wrapping_mul(0xC2B2AE3D) ^ 0x85EBCA77) % P::PRIME)
-        .collect();
+    let device = R::Device::default();
+    let exec = NttExec::<P, R>::new(&device, 0);
+    let client = R::client(&device);
 
-    let p3_in: Vec<P::P3> = natural_evals.iter().map(|&v| P::p3_from_canonical(v)).collect();
-    let dft = Radix2Dit::<P::P3>::default();
-    let p3_out = dft.idft(p3_in);
-    let expected_natural: Vec<u32> = p3_out.iter().map(|f| f.as_canonical_u32()).collect();
-    let mut expected_bitrev = expected_natural.clone();
-    bit_reverse_in_place(&mut expected_bitrev);
+    let mut all_input = Vec::with_capacity(batch * n);
+    let mut expected = Vec::with_capacity(batch * n);
 
-    let natural_raw: Vec<u32> = natural_evals
-        .iter()
-        .map(|&v| MontyField::<P>::from_canonical(v).raw())
-        .collect();
-    let partial_inv_twiddles = build_partial_inv_twiddles::<P>(log_n);
-    let inv_n = n_inv::<P>(log_n);
+    for b in 0..batch {
+        let canonical = pseudo_random_canonical::<P>(n, b);
 
-    let actual_raw = run_intt::<P, R>(&Default::default(), &natural_raw, &partial_inv_twiddles, inv_n, log_n);
-    let actual: Vec<u32> = actual_raw
+        // Our input: natural-order evaluations.
+        let field: Vec<MontyField<P>> = canonical
+            .iter()
+            .map(|&v| MontyField::<P>::from_canonical(v))
+            .collect();
+        all_input.extend(field.iter().map(|f| f.raw()));
+
+        // Plonky3 iDFT, then bit-reverse to match our output convention.
+        let p3_in: Vec<P::P3> = canonical.iter().map(|&v| P::p3_from_canonical(v)).collect();
+        let dft = Radix2Dit::<P::P3>::default();
+        let p3_out = dft.idft(p3_in);
+        let mut p3_canonical: Vec<u32> =
+            p3_out.iter().map(|f| f.as_canonical_u32()).collect();
+        bit_reverse_in_place(&mut p3_canonical);
+        expected.extend(p3_canonical);
+    }
+
+    let buf = client.create_from_slice(u32::as_bytes(&all_input));
+    exec.inverse_auto(&buf, log_n, batch);
+
+    let bytes = client.read_one(buf);
+    let actual: Vec<u32> = u32::from_bytes(&bytes)
         .iter()
         .map(|&raw| MontyField::<P>::from_raw(raw).to_canonical())
         .collect();
 
     assert_eq!(
-        actual, expected_bitrev,
-        "inverse mismatch at log_n={log_n}: first diff at {:?}",
-        actual.iter().zip(expected_bitrev.iter()).position(|(a, b)| a != b)
+        actual, expected,
+        "inverse mismatch: log_n={log_n}, batch={batch}, first diff at {:?}",
+        actual.iter().zip(expected.iter()).position(|(a, b)| a != b)
     );
 }
 
-fn check_roundtrip<P: FieldBridge, R: Runtime>(log_n: u32)
+/// Roundtrip: forward then inverse should be identity.
+fn check_roundtrip<P: MontyParameters, R: Runtime>(log_n: u32, batch: usize)
 where
     R::Device: Default,
 {
     let n = 1usize << log_n;
-    let bitrev_canonical: Vec<u32> = (0..n as u32)
-        .map(|i| (i.wrapping_mul(0x9E3779B1) ^ 0xDEADBEEF) % P::PRIME)
-        .collect();
-    let bitrev_raw: Vec<u32> = bitrev_canonical
-        .iter()
-        .map(|&v| MontyField::<P>::from_canonical(v).raw())
-        .collect();
+    let device = R::Device::default();
+    let exec = NttExec::<P, R>::new(&device, 0);
+    let client = R::client(&device);
 
-    let partial_twiddles = build_partial_fwd_twiddles::<P>(log_n);
-    let partial_inv_twiddles = build_partial_inv_twiddles::<P>(log_n);
-    let inv_n = n_inv::<P>(log_n);
+    let mut all_input = Vec::with_capacity(batch * n);
+    for b in 0..batch {
+        for i in 0..n as u32 {
+            let seed = i.wrapping_mul(0x9E3779B1)
+                ^ (b as u32).wrapping_mul(0x517CC1B7)
+                ^ 0xDEADBEEF;
+            let val = MontyField::<P>::from_canonical(seed % P::PRIME);
+            all_input.push(val.raw());
+        }
+    }
+    let original = all_input.clone();
 
-    let natural_evals_raw = run_ntt::<P, R>(&Default::default(), &bitrev_raw, &partial_twiddles, log_n);
-    let recovered_raw = run_intt::<P, R>(&Default::default(), &natural_evals_raw, &partial_inv_twiddles, inv_n, log_n);
+    let buf = client.create_from_slice(u32::as_bytes(&all_input));
+    exec.forward_auto(&buf, log_n, batch);
+    exec.inverse_auto(&buf, log_n, batch);
 
-    let recovered: Vec<u32> = recovered_raw
-        .iter()
-        .map(|&raw| MontyField::<P>::from_raw(raw).to_canonical())
-        .collect();
+    let bytes = client.read_one(buf);
+    let result = u32::from_bytes(&bytes).to_vec();
 
     assert_eq!(
-        recovered, bitrev_canonical,
-        "round-trip failed at log_n={log_n}: first diff at {:?}",
-        recovered.iter().zip(bitrev_canonical.iter()).position(|(a, b)| a != b)
+        result, original,
+        "roundtrip failed: log_n={log_n}, batch={batch}, first diff at {:?}",
+        result.iter().zip(original.iter()).position(|(a, b)| a != b)
     );
 }
 
-fn check_all<P: FieldBridge, R: Runtime>(range: impl IntoIterator<Item = u32>)
-where
-    R::Device: Default,
-{
-    for log_n in range {
-        check_forward::<P, R>(log_n);
-        check_inverse::<P, R>(log_n);
-        check_roundtrip::<P, R>(log_n);
+// ===========================================================================
+// wgpu — BabyBear log_n 1..=24, KoalaBear spot-check at 20
+// ===========================================================================
+
+#[test]
+fn wgpu_bb_forward() {
+    for log_n in 1..=24u32 {
+        check_forward::<BabyBearParameters, cubecl::wgpu::WgpuRuntime>(log_n, 1);
     }
 }
 
-// wgpu: full single-pass range.
 #[test]
-fn bb_wgpu() { check_all::<BabyBearParameters,  WgpuRuntime>(1..=10); }
-#[test]
-fn kb_wgpu() { check_all::<KoalaBearParameters, WgpuRuntime>(1..=10); }
+fn wgpu_bb_inverse() {
+    for log_n in 1..=24u32 {
+        check_inverse::<BabyBearParameters, cubecl::wgpu::WgpuRuntime>(log_n, 1);
+    }
+}
 
-// cubecl-cpu: spot check.
 #[test]
-fn bb_cpu()  { check_all::<BabyBearParameters,  CpuRuntime>([8u32]); }
+fn wgpu_kb_forward() {
+    check_forward::<KoalaBearParameters, cubecl::wgpu::WgpuRuntime>(20, 1);
+}
+
 #[test]
-fn kb_cpu()  { check_all::<KoalaBearParameters, CpuRuntime>([8u32]); }
+fn wgpu_kb_inverse() {
+    check_inverse::<KoalaBearParameters, cubecl::wgpu::WgpuRuntime>(20, 1);
+}
+
+// ===========================================================================
+// CUDA — BabyBear, log_n 1..=24 (includes 3-pass for 21..=24)
+// ===========================================================================
+
+#[test]
+fn cuda_bb_forward() {
+    for log_n in 1..=24u32 {
+        check_forward::<BabyBearParameters, cubecl::cuda::CudaRuntime>(log_n, 1);
+    }
+}
+
+#[test]
+fn cuda_bb_inverse() {
+    for log_n in 1..=24u32 {
+        check_inverse::<BabyBearParameters, cubecl::cuda::CudaRuntime>(log_n, 1);
+    }
+}
+
+// ===========================================================================
+// CPU — BabyBear, log_n=10 (CPU compilation is very slow)
+// ===========================================================================
+
+#[test]
+#[ignore]
+fn cpu_bb_forward() {
+    check_forward::<BabyBearParameters, cubecl::cpu::CpuRuntime>(10, 1);
+}
+
+#[test]
+#[ignore]
+fn cpu_bb_inverse() {
+    check_inverse::<BabyBearParameters, cubecl::cpu::CpuRuntime>(10, 1);
+}
+
+// ===========================================================================
+// Batch-size sweep — log_n=20
+//
+// With 64 MiB scratch and log_n=20 (4 MiB/poly), sub_batch=16.
+// Batch sizes chosen to exercise: trivial (1), exact fit (16),
+// remainder (17, 33), multiple sub-batches (32, 100).
+// ===========================================================================
+
+#[test]
+fn cuda_bb_roundtrip_batch_sweep() {
+    for batch in [1, 2, 3, 5, 7, 16, 17, 32, 33, 100] {
+        check_roundtrip::<BabyBearParameters, cubecl::cuda::CudaRuntime>(20, batch);
+    }
+}
+
+#[test]
+fn wgpu_bb_roundtrip_batch_sweep() {
+    // wgpu has tighter buffer allocation limits than CUDA, so keep
+    // batch sizes small enough that the user buffer fits (~128 MiB cap).
+    for batch in [1, 2, 3, 5, 7, 16, 17] {
+        check_roundtrip::<BabyBearParameters, cubecl::wgpu::WgpuRuntime>(20, batch);
+    }
+}
