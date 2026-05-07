@@ -281,3 +281,25 @@ fn wgpu_bb_roundtrip_batch_sweep() {
         check_roundtrip::<BabyBearParameters, cubecl::wgpu::WgpuRuntime>(20, batch);
     }
 }
+
+// Forward-only batch sweep. Roundtrip can mask sub-batch slicing bugs
+// (a forward miscompute and inverse miscompute can cancel on the same row,
+// while rows past sub_batch may simply be untouched). This sweep checks
+// each batch row against Plonky3 directly, so it only passes if every
+// sub-batch iteration writes the right slice.
+
+#[cfg(feature = "cuda")]
+#[test]
+fn cuda_bb_forward_batch_sweep() {
+    for batch in [1, 2, 3, 5, 7, 16, 17, 32, 33, 100] {
+        check_forward::<BabyBearParameters, cubecl::cuda::CudaRuntime>(20, batch);
+    }
+}
+
+#[cfg(feature = "wgpu")]
+#[test]
+fn wgpu_bb_forward_batch_sweep() {
+    for batch in [1, 2, 3, 5, 7, 16, 17] {
+        check_forward::<BabyBearParameters, cubecl::wgpu::WgpuRuntime>(20, batch);
+    }
+}

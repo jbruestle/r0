@@ -183,20 +183,27 @@ impl<P: MontyParameters, R: Runtime> NttExec<P, R> {
         let total = sub_batch * n;
         let num_passes = plan.passes.len();
 
+        // Slice the user buffer down to the current sub-batch so kernels
+        // (which index from CUBE_POS_Y * n internally) hit the right rows.
+        // Cloning a Handle is shallow — just metadata, no data copy.
+        let buf_slice = buf
+            .clone()
+            .offset_start((buf_offset * ELEM_BYTES) as u64);
+
         for (pass_idx, pass) in plan.passes.iter().enumerate() {
             // Ping-pong: even passes read from user buf, write to scratch.
             //             odd passes read from scratch, write to user buf.
             let (src, dst) = if pass_idx % 2 == 0 {
-                (buf, &self.scratch)
+                (&buf_slice, &self.scratch)
             } else {
-                (&self.scratch, buf)
+                (&self.scratch, &buf_slice)
             };
             self.launch_pass(src, dst, tw, inv_n, plan.log_n, pass, sub_batch, dir);
         }
 
         // If odd number of passes, result is in scratch — copy back.
         if num_passes % 2 == 1 {
-            self.copy_to_user(buf, buf_offset, total);
+            self.copy_to_user(&buf_slice, total);
         }
     }
 
@@ -256,7 +263,7 @@ impl<P: MontyParameters, R: Runtime> NttExec<P, R> {
         }
     }
 
-    fn copy_to_user(&self, buf: &Handle, _buf_offset: usize, count: usize) {
+    fn copy_to_user(&self, dst: &Handle, count: usize) {
         let wg_size = 256u32;
         let grid = ((count as u32 + wg_size - 1) / wg_size, 1, 1);
 
@@ -266,7 +273,7 @@ impl<P: MontyParameters, R: Runtime> NttExec<P, R> {
                 CubeCount::Static(grid.0, 1, 1),
                 CubeDim::new_1d(wg_size),
                 ArrayArg::from_raw_parts::<u32>(&self.scratch, count, 1),
-                ArrayArg::from_raw_parts::<u32>(buf, count, 1),
+                ArrayArg::from_raw_parts::<u32>(dst, count, 1),
                 count as u32,
             )
             .unwrap();

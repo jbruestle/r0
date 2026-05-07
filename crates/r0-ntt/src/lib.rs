@@ -23,6 +23,7 @@
 mod exec;
 mod fwd_pass;
 mod inv_pass;
+mod pass_common;
 pub mod plan;
 mod twiddles;
 

@@ -17,34 +17,7 @@
 use cubecl::prelude::*;
 use r0_field::{monty_add, monty_mul, monty_sub, MontyParameters};
 
-/// Reconstruct a twiddle factor w^k from the windowed partial twiddle table.
-///
-/// `partial_twiddles` has layout [NUM_WINDOWS][WINDOW_SIZE] (5 windows of 64).
-/// Decomposes `k` into 6-bit windows and multiplies the corresponding entries.
-#[cube]
-fn reconstruct_twiddle<P: MontyParameters>(
-    partial_twiddles: &Array<u32>,
-    k: u32,
-    #[comptime] num_windows: u32,
-) -> u32 {
-    let lg_window = comptime!(10u32);
-    let window_mask = comptime!((1u32 << 10) - 1);
-    let window_size = comptime!(1024usize);
-
-    // Start with window 0's entry (avoids an extra multiply vs starting at 1).
-    let k_0 = k & window_mask;
-    let mut acc = partial_twiddles[k_0 as usize];
-
-    // Remaining windows: branchless multiply. partial[w][0] = monty(1) = identity.
-    // The 12 KiB table fits in L1 cache, so global reads are fast.
-    #[unroll]
-    for w in 1..num_windows {
-        let k_w = (k >> (w * lg_window)) & window_mask;
-        let idx = comptime!(w as usize) * window_size + k_w as usize;
-        acc = monty_mul::<P>(acc, partial_twiddles[idx]);
-    }
-    acc
-}
+use crate::pass_common::reconstruct_twiddle;
 
 /// Single forward-NTT pass: CT-DIT butterflies for `log_pass` stages
 /// starting at global stage `stage_offset`.
@@ -55,7 +28,7 @@ fn reconstruct_twiddle<P: MontyParameters>(
 ///   concurrent reads otherwise). For the final pass (no transpose),
 ///   `output` may alias `input`.
 /// - `partial_twiddles`: windowed twiddle table (NUM_WINDOWS * WINDOW_SIZE
-///   = 320 entries). Built by `build_partial_fwd_twiddles`.
+///   = 3072 entries). Built by `build_partial_fwd_twiddles`.
 /// - `log_n`: total transform size (N = 2^log_n).
 /// - `log_pass`: number of stages this pass handles (N_pass = 2^log_pass).
 /// - `stage_offset`: global stage index where this pass begins.

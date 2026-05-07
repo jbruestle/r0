@@ -63,11 +63,11 @@ pub fn n_inv<P: MontyParameters>(log_n: u32) -> u32 {
 
 // -- Windowed partial twiddle tables --
 //
-// Instead of storing N/2 twiddle factors (2MB for log_n=20), we store a
+// Instead of storing N/2 twiddle factors (2 MiB for log_n=20), we store a
 // small partial table of NUM_WINDOWS * WINDOW_SIZE entries and reconstruct
 // any w^k on-the-fly via at most NUM_WINDOWS-1 multiplications.
 //
-// Layout: flat [window_0[0..64], window_1[0..64], ..., window_4[0..64]]
+// Layout: flat [window_0[0..1024], window_1[0..1024], window_2[0..1024]]
 // partial[w][i] = omega^(i * 2^(w * LG_WINDOW))
 
 /// Window size exponent for partial twiddle tables.
@@ -82,7 +82,7 @@ pub const PARTIAL_TWIDDLE_LEN: usize = NUM_WINDOWS * WINDOW_SIZE; // 3072
 
 /// Build a forward partial twiddle table for the given `log_n`.
 ///
-/// Returns a flat `Vec<u32>` of length `NUM_WINDOWS * WINDOW_SIZE` (320).
+/// Returns a flat `Vec<u32>` of length `NUM_WINDOWS * WINDOW_SIZE` (3072).
 /// Entry `[w * WINDOW_SIZE + i]` = omega^(i * 2^(w * LG_WINDOW)) in
 /// Montgomery form, where omega is a primitive 2^log_n-th root of unity.
 pub fn build_partial_fwd_twiddles<P: MontyParameters>(log_n: u32) -> Vec<u32> {
