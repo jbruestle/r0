@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>r0-ntt — WebGPU benchmark</title>
+<link data-trunk rel="rust" />
+<style>
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Mono", Menlo, monospace;
+    max-width: 900px;
+    margin: 2em auto;
+    padding: 0 1em;
+    line-height: 1.5;
+    color: #222;
+  }
+  h1 { font-size: 1.4em; }
+  h2 { font-size: 1.1em; margin-top: 1.5em; }
+  pre {
+    background: #f4f4f4;
+    border: 1px solid #ddd;
+    padding: 0.8em;
+    overflow-x: auto;
+    font-size: 0.9em;
+  }
+  .controls { margin: 1em 0; }
+  .controls label { margin-right: 1em; }
+  .controls input[type="number"] { width: 5em; }
+  button {
+    padding: 0.5em 1.2em;
+    font-size: 1em;
+    cursor: pointer;
+  }
+  button:disabled { opacity: 0.5; cursor: wait; }
+  .status { margin: 0.5em 0; font-style: italic; color: #666; }
+  .err { color: #b00; }
+  table { border-collapse: collapse; margin-top: 0.5em; }
+  td, th { border: 1px solid #ddd; padding: 0.3em 0.8em; text-align: right; }
+  th { background: #f4f4f4; text-align: center; }
+  td:first-child, th:first-child { text-align: left; }
+</style>
+</head>
+<body>
+<h1>r0-ntt — WebGPU forward-NTT benchmark</h1>
+<p>
+  Batched forward NTT over the BabyBear field via cubecl-wgpu. WebGPU only;
+  Chrome/Edge supported out of the box, Safari needs 18+, Firefox needs Nightly.
+</p>
+
+<h2>Device</h2>
+<pre id="device">initializing...</pre>
+
+<h2>Run</h2>
+<div class="controls">
+  <label>log<sub>2</sub>(N) <input id="log_n" type="number" value="20" min="1" max="24" /></label>
+  <label>batch <input id="batch" type="number" value="32" min="1" max="256" /></label>
+  <label>warmups <input id="warmups" type="number" value="3" min="0" max="20" /></label>
+  <label>samples <input id="samples" type="number" value="20" min="1" max="200" /></label>
+  <button id="run">Run benchmark</button>
+</div>
+<div class="status" id="status"></div>
+<div id="results"></div>
+
+<script type="module">
+  import init, { diagnose, run_benchmark } from "./r0-ntt-web.js";
+
+  const $ = (id) => document.getElementById(id);
+  const setStatus = (msg, isErr=false) => {
+    const el = $("status");
+    el.textContent = msg;
+    el.classList.toggle("err", isErr);
+  };
+
+  async function main() {
+    await init();
+
+    try {
+      const info = JSON.parse(await diagnose());
+      $("device").textContent = JSON.stringify(info, null, 2);
+    } catch (e) {
+      $("device").textContent = "ERROR: " + e;
+      $("device").classList.add("err");
+      setStatus("WebGPU init failed — does this browser support WebGPU?", true);
+      return;
+    }
+
+    $("run").onclick = async () => {
+      $("run").disabled = true;
+      setStatus("running...");
+      $("results").innerHTML = "";
+
+      const log_n   = +$("log_n").value;
+      const batch   = +$("batch").value;
+      const warmups = +$("warmups").value;
+      const samples = +$("samples").value;
+
+      const t0 = performance.now();
+      try {
+        const out = JSON.parse(await run_benchmark(log_n, batch, warmups, samples));
+        const wallMs = (performance.now() - t0).toFixed(0);
+
+        $("results").innerHTML = `
+          <table>
+            <tr><th>Stat</th><th>µs (batch=${out.batch})</th></tr>
+            <tr><td>min</td><td>${out.min_us.toFixed(1)}</td></tr>
+            <tr><td>median</td><td>${out.median_us.toFixed(1)}</td></tr>
+            <tr><td>mean</td><td>${out.mean_us.toFixed(1)}</td></tr>
+            <tr><td>max</td><td>${out.max_us.toFixed(1)}</td></tr>
+            <tr><td>per-NTT (median÷batch)</td><td>${out.per_ntt_us.toFixed(2)}</td></tr>
+          </table>
+          <p style="margin-top:1em">
+            plan: <code>${out.plan}</code> &nbsp; sub_batch=${out.sub_batch}
+          </p>
+          <details style="margin-top:0.5em"><summary>raw samples (µs)</summary>
+            <pre>${out.samples_us.join(", ")}</pre>
+          </details>`;
+        setStatus(`done in ${wallMs} ms wall`);
+      } catch (e) {
+        setStatus("error: " + e, true);
+      } finally {
+        $("run").disabled = false;
+      }
+    };
+  }
+
+  main();
+</script>
+</body>
+</html>

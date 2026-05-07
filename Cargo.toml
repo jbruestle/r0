@@ -3,6 +3,11 @@ resolver = "2"
 members = [
     "crates/r0-field",
     "crates/r0-ntt",
+    "crates/r0-ntt-web",
+]
+default-members = [
+    "crates/r0-field",
+    "crates/r0-ntt",
 ]
 
 [workspace.package]

@@ -1,0 +1,10 @@
+[build]
+release = true
+target = "index.html"
+# Predictable output filenames so the <script> import path is stable.
+filehash = false
+
+[serve]
+addresses = ["127.0.0.1"]
+port = 8080
+open = false
