@@ -1,4 +1,4 @@
-//! Tests for the NttPlanner high-level API.
+//! Tests for the NttExec high-level API.
 
 use cubecl::prelude::*;
 use cubecl::wgpu::WgpuRuntime;
@@ -7,9 +7,9 @@ use p3_dft::{Radix2Dit, TwoAdicSubgroupDft};
 use p3_field::PrimeField32;
 
 use r0_field::{BabyBearParameters, MontyField, MontyParameters};
-use r0_ntt::{bit_reverse_in_place, NttPlanner};
+use r0_ntt::{bit_reverse_in_place, NttExec};
 
-fn check_forward_planner<R: Runtime>(log_n: u32, batch: usize)
+fn check_forward_exec<R: Runtime>(log_n: u32, batch: usize)
 where
     R::Device: Default,
 {
@@ -26,7 +26,7 @@ where
             })
             .collect();
 
-        // Bit-reverse the coefficients (our convention: R→N forward).
+        // Bit-reverse the coefficients (our convention: R->N forward).
         let mut field: Vec<MontyField<P>> = canonical
             .iter()
             .map(|&v| MontyField::<P>::from_canonical(v))
@@ -53,13 +53,13 @@ where
         expected.extend(p3_out.iter().map(|f| f.as_canonical_u32()));
     }
 
-    // Run through planner.
+    // Run through executor.
     let device = R::Device::default();
-    let planner = NttPlanner::<P, R>::new(&device, 0);
+    let exec = NttExec::<P, R>::new(&device, 0);
     let client = R::client(&device);
     let buf = client.create_from_slice(u32::as_bytes(&all_input));
 
-    planner.forward(&buf, log_n, batch);
+    exec.forward_auto(&buf, log_n, batch);
 
     // Read back and compare.
     let bytes = client.read_one(buf);
@@ -71,12 +71,12 @@ where
 
     assert_eq!(
         actual, expected,
-        "planner forward mismatch at log_n={log_n}, batch={batch}: first diff at {:?}",
+        "exec forward mismatch at log_n={log_n}, batch={batch}: first diff at {:?}",
         actual.iter().zip(expected.iter()).position(|(a, b)| a != b)
     );
 }
 
-fn check_roundtrip_planner<R: Runtime>(log_n: u32, batch: usize)
+fn check_roundtrip_exec<R: Runtime>(log_n: u32, batch: usize)
 where
     R::Device: Default,
 {
@@ -95,13 +95,13 @@ where
     let original = all_input.clone();
 
     let device = R::Device::default();
-    let planner = NttPlanner::<P, R>::new(&device, 0);
+    let exec = NttExec::<P, R>::new(&device, 0);
     let client = R::client(&device);
     let buf = client.create_from_slice(u32::as_bytes(&all_input));
 
     // Forward then inverse should be identity.
-    planner.forward(&buf, log_n, batch);
-    planner.inverse(&buf, log_n, batch);
+    exec.forward_auto(&buf, log_n, batch);
+    exec.inverse_auto(&buf, log_n, batch);
 
     let bytes = client.read_one(buf);
     let result = u32::from_bytes(&bytes).to_vec();
@@ -117,36 +117,36 @@ where
 
 #[test]
 fn forward_single_pass_wgpu() {
-    check_forward_planner::<WgpuRuntime>(8, 1);
-    check_forward_planner::<WgpuRuntime>(10, 3);
+    check_forward_exec::<WgpuRuntime>(8, 1);
+    check_forward_exec::<WgpuRuntime>(10, 3);
 }
 
 #[test]
 fn forward_two_pass_wgpu() {
-    check_forward_planner::<WgpuRuntime>(14, 1);
-    check_forward_planner::<WgpuRuntime>(14, 4);
+    check_forward_exec::<WgpuRuntime>(14, 1);
+    check_forward_exec::<WgpuRuntime>(14, 4);
 }
 
 #[test]
 fn forward_cuda() {
-    check_forward_planner::<cubecl::cuda::CudaRuntime>(20, 2);
+    check_forward_exec::<cubecl::cuda::CudaRuntime>(20, 2);
 }
 
 // -- Roundtrip tests --
 
 #[test]
 fn roundtrip_single_pass_wgpu() {
-    check_roundtrip_planner::<WgpuRuntime>(8, 1);
-    check_roundtrip_planner::<WgpuRuntime>(10, 5);
+    check_roundtrip_exec::<WgpuRuntime>(8, 1);
+    check_roundtrip_exec::<WgpuRuntime>(10, 5);
 }
 
 #[test]
 fn roundtrip_two_pass_wgpu() {
-    check_roundtrip_planner::<WgpuRuntime>(14, 1);
-    check_roundtrip_planner::<WgpuRuntime>(14, 4);
+    check_roundtrip_exec::<WgpuRuntime>(14, 1);
+    check_roundtrip_exec::<WgpuRuntime>(14, 4);
 }
 
 #[test]
 fn roundtrip_cuda() {
-    check_roundtrip_planner::<cubecl::cuda::CudaRuntime>(20, 2);
+    check_roundtrip_exec::<cubecl::cuda::CudaRuntime>(20, 2);
 }
