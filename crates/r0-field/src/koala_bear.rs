@@ -6,6 +6,8 @@
 
 use crate::monty::{MontyField, MontyParameters};
 
+/// Marker type carrying [`MontyParameters`] for the KoalaBear field.
+/// Pair with [`MontyField`] to get [`KoalaBear`].
 #[derive(Copy, Clone, Default, Debug, Eq, Hash, PartialEq)]
 pub struct KoalaBearParameters;
 
@@ -24,4 +26,5 @@ impl MontyParameters for KoalaBearParameters {
     ];
 }
 
+/// KoalaBear field element: shorthand for [`MontyField<KoalaBearParameters>`].
 pub type KoalaBear = MontyField<KoalaBearParameters>;

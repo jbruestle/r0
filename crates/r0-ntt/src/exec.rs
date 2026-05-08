@@ -15,12 +15,22 @@ use crate::twiddles::{
 const DEFAULT_SCRATCH_BYTES: usize = 64 * 1024 * 1024;
 const ELEM_BYTES: usize = 4;
 
-/// NTT executor: owns twiddle tables and scratch memory on a device.
+/// Device-resident NTT executor.
 ///
-/// Construct via [`NttExec::new`], then call [`forward`]/[`inverse`]. Both
-/// build a plan internally via a fixed heuristic. Explicit-plan variants
-/// (`forward_with_plan`/`inverse_with_plan`) are gated behind the
-/// `unstable-planner` feature; that surface is still in flux.
+/// Owns precomputed forward and inverse twiddle tables (one per
+/// supported `log_n`) and a scratch buffer used for multi-pass
+/// ping-pong. Construct one per `(device, field)` and reuse it across
+/// calls — both setup and twiddle upload are nontrivial.
+///
+/// `P` selects the field
+/// ([`BabyBearParameters`](r0_field::BabyBearParameters) or
+/// [`KoalaBearParameters`](r0_field::KoalaBearParameters)). `R` selects
+/// the cubecl runtime (`CudaRuntime`, `WgpuRuntime`, `CpuRuntime`).
+///
+/// Run an NTT with [`forward`] or [`inverse`]; both pick a plan
+/// internally via the heuristic. For autotuning or fine-grained
+/// control, enable the `unstable-planner` feature and use
+/// `forward_with_plan` / `inverse_with_plan`.
 ///
 /// [`forward`]: NttExec::forward
 /// [`inverse`]: NttExec::inverse
@@ -36,11 +46,19 @@ pub struct NttExec<P: MontyParameters, R: Runtime> {
 }
 
 impl<P: MontyParameters, R: Runtime> NttExec<P, R> {
-    /// Create a new executor, precomputing all twiddle tables and allocating
-    /// scratch memory on `device`.
+    /// Construct an executor on `device`, precomputing twiddle tables for
+    /// every supported `log_n` (1..=24, capped by `P::TWO_ADICITY`) and
+    /// allocating scratch.
     ///
-    /// `scratch_bytes`: scratch buffer size in bytes. Pass 0 for the default
-    /// (64 MiB). Should be a power of two for clean sub-batching.
+    /// `scratch_bytes` controls the multi-pass ping-pong buffer. Pass 0
+    /// for the default (64 MiB). Each in-flight polynomial of size
+    /// `2^log_n` consumes `4 << log_n` bytes of scratch, which sets the
+    /// per-launch sub-batch ceiling for multi-pass plans; small scratch
+    /// just means more launch iterations. A power of two is a good
+    /// default.
+    ///
+    /// Setup touches the device (uploads twiddles, allocates scratch),
+    /// so build one and reuse it.
     pub fn new(device: &R::Device, scratch_bytes: usize) -> Self {
         let scratch_bytes = if scratch_bytes == 0 {
             DEFAULT_SCRATCH_BYTES
@@ -91,38 +109,57 @@ impl<P: MontyParameters, R: Runtime> NttExec<P, R> {
         }
     }
 
-    /// Device limits detected at construction time.
-    ///
-    /// Gated behind `unstable-planner`: callers that just want to run an
-    /// NTT don't need this — the heuristic uses limits internally.
+    /// Device limits the planner sees (shared memory, max threads per
+    /// workgroup, scratch bytes). Gated behind `unstable-planner`;
+    /// callers using the heuristic path don't need this.
     #[cfg(feature = "unstable-planner")]
     pub fn limits(&self) -> &DeviceLimits {
         &self.limits
     }
 
-    /// Access the underlying compute client (for sync, buffer creation, etc.).
+    /// Underlying cubecl compute client. Use for buffer creation
+    /// (`create_from_slice`, `empty`), sync, and readback.
     pub fn client(&self) -> &ComputeClient<R> {
         &self.client
     }
 
-    /// Forward NTT (R->N) of `batch` polynomials of size `2^log_n`,
-    /// in place on `buf`. Plan is picked via the internal heuristic.
+    /// Forward NTT (R→N) of `batch` polynomials of size `2^log_n`,
+    /// in place on `buf`.
+    ///
+    /// `buf` holds `batch * 2^log_n` Montgomery-form `u32`s laid out
+    /// as `batch` contiguous polynomials in bit-reversed coefficient
+    /// order. On return, each polynomial holds its natural-order
+    /// evaluations. The plan is built by the internal heuristic.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `log_n` is outside `[1, P::TWO_ADICITY.min(24)]`.
     pub fn forward(&self, buf: &Handle, log_n: u32, batch: usize) {
         let plan = plan_heuristic(log_n, batch, &self.limits);
         self.run_forward(buf, &plan, batch);
     }
 
-    /// Inverse NTT (N->R) of `batch` polynomials of size `2^log_n`,
-    /// in place on `buf`. Plan is picked via the internal heuristic.
+    /// Inverse NTT (N→R) of `batch` polynomials of size `2^log_n`,
+    /// in place on `buf`.
+    ///
+    /// Reads natural-order evaluations and writes bit-reversed
+    /// coefficients (with the `N^{-1}` scaling already applied). The
+    /// plan is built by the internal heuristic.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `log_n` is outside `[1, P::TWO_ADICITY.min(24)]`.
     pub fn inverse(&self, buf: &Handle, log_n: u32, batch: usize) {
         let plan = plan_heuristic(log_n, batch, &self.limits);
         self.run_inverse(buf, &plan, batch);
     }
 
-    /// Forward NTT (R->N) using an explicit plan.
+    /// Forward NTT (R→N) using an explicit [`NttPlan`].
     ///
-    /// Gated behind `unstable-planner`. Prefer [`forward`] unless you are
-    /// autotuning or otherwise specifically targeting a known-good plan.
+    /// Gated behind `unstable-planner`. Prefer [`forward`] unless you
+    /// have a hand-tuned or autotuned plan you want to lock in.
+    /// Build plans via [`crate::plan_heuristic`] or
+    /// [`crate::enumerate_valid_plans`].
     ///
     /// [`forward`]: NttExec::forward
     #[cfg(feature = "unstable-planner")]
@@ -130,9 +167,8 @@ impl<P: MontyParameters, R: Runtime> NttExec<P, R> {
         self.run_forward(buf, plan, batch);
     }
 
-    /// Inverse NTT (N->R) using an explicit plan.
-    ///
-    /// Gated behind `unstable-planner`. See [`forward_with_plan`].
+    /// Inverse NTT (N→R) using an explicit [`NttPlan`].
+    /// See [`forward_with_plan`] for caveats.
     ///
     /// [`forward_with_plan`]: NttExec::forward_with_plan
     #[cfg(feature = "unstable-planner")]

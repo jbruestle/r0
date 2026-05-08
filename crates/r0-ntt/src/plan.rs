@@ -1,8 +1,14 @@
 //! NTT execution plans and planning strategies.
 //!
-//! This module contains pure data types and logic — no device interaction,
-//! no cubecl dependency. Plans can be constructed via [`plan_heuristic`],
-//! manually, or (eventually) via autotuning.
+//! Pure data types and logic — no device interaction, no cubecl
+//! dependency. Plans can be constructed via [`plan_heuristic`]
+//! (default, used internally by [`crate::NttExec::forward`] /
+//! [`crate::NttExec::inverse`]), constructed by hand, or enumerated
+//! for autotuning via [`enumerate_valid_plans`].
+//!
+//! These items are re-exported at the crate root only when the
+//! `unstable-planner` feature is enabled. Treat the surface as in
+//! flux — names and shapes may change as autotuning matures.
 
 /// Size of a field element in bytes (u32 Montgomery form).
 const ELEM_BYTES: usize = 4;

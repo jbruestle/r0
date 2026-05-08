@@ -125,7 +125,30 @@ fn build_partial_table<P: MontyParameters>(omega: MontyField<P>, _log_n: u32) ->
     out
 }
 
-/// In-place bit-reversal permutation of a power-of-two-sized slice.
+/// In-place bit-reversal permutation of a power-of-two-length slice.
+///
+/// In this crate's convention, NTT coefficients live in bit-reversed
+/// memory order while evaluations live in natural memory order. Apply
+/// this function to map between them: before [`NttExec::forward`] to
+/// place coefficients in bit-reversed order, or after
+/// [`NttExec::inverse`] to read the recovered coefficients in natural
+/// order.
+///
+/// # Panics
+///
+/// Panics if `data.len()` is not a power of two.
+///
+/// # Example
+///
+/// ```
+/// use r0_ntt::bit_reverse_in_place;
+/// let mut v = [0u32, 1, 2, 3, 4, 5, 6, 7];
+/// bit_reverse_in_place(&mut v);
+/// assert_eq!(v, [0, 4, 2, 6, 1, 5, 3, 7]);
+/// ```
+///
+/// [`NttExec::forward`]: crate::NttExec::forward
+/// [`NttExec::inverse`]: crate::NttExec::inverse
 pub fn bit_reverse_in_place<T: Copy>(data: &mut [T]) {
     let n = data.len();
     if n <= 1 {

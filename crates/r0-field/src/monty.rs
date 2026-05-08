@@ -1,6 +1,8 @@
-//! Generic 31-bit Montgomery field. Single `#[cube]` source — each op
-//! is callable from both regular Rust (host helpers, twiddle precompute,
-//! Plonky3 oracle tests) and cubecl kernels.
+//! Generic 31-bit Montgomery field, single-sourced via cubecl `#[cube]`.
+//!
+//! Every arithmetic op below has one definition that compiles to host
+//! Rust, CUDA, WGSL, and the cubecl CPU backend. Operator overloads on
+//! [`MontyField`] forward to those same `#[cube]` functions.
 //!
 //! # cubecl 0.9 quirks accommodated
 //!
@@ -21,7 +23,17 @@
 use core::marker::PhantomData;
 use cubecl::prelude::*;
 
-/// Compile-time parameters for a 31-bit Montgomery prime field.
+/// Compile-time description of a 31-bit Montgomery prime field.
+///
+/// Implement on a zero-sized marker type to define a new field; pair
+/// with [`MontyField<Self>`] for elements. Two implementations are
+/// provided, [`crate::BabyBearParameters`] and
+/// [`crate::KoalaBearParameters`]; you should rarely need to define
+/// your own.
+///
+/// Constants are not validated against each other — they must be
+/// mutually consistent. The cross-check against Plonky3 is the test
+/// suite's job.
 pub trait MontyParameters: Copy + Clone + Default + Send + Sync + 'static {
     /// The prime modulus `p`. Must satisfy `p < 2^31` (so `2p < 2^32`).
     const PRIME: u32;
@@ -43,7 +55,16 @@ pub trait MontyParameters: Copy + Clone + Default + Send + Sync + 'static {
     const TWO_ADIC_GENERATORS: &'static [u32];
 }
 
-/// 31-bit Montgomery field element. `raw = x · 2^32 mod p`, in `[0, p)`.
+/// A field element of the prime field defined by `P`.
+///
+/// Internally a single `u32` holding the value in Montgomery form
+/// (`x · 2^32 mod p`, reduced to `[0, p)`). Build from a canonical
+/// integer via [`from_canonical`](Self::from_canonical) and read the
+/// canonical representative back via
+/// [`to_canonical`](Self::to_canonical). Add/sub/mul/neg work as
+/// operator overloads on the host; inside `#[cube]` kernels, the same
+/// arithmetic is available as the free [`monty_add()`], [`monty_sub()`],
+/// [`monty_mul()`], [`monty_neg()`] functions on the underlying `u32`.
 #[derive(Copy, Clone, Debug, Eq, Hash, PartialEq, Default)]
 #[repr(transparent)]
 pub struct MontyField<P: MontyParameters> {
@@ -52,19 +73,21 @@ pub struct MontyField<P: MontyParameters> {
 }
 
 impl<P: MontyParameters> MontyField<P> {
+    /// The additive identity (`0` in canonical form).
     pub const ZERO: Self = Self {
         raw: 0,
         _p: PhantomData,
     };
 
-    /// Wrap an already-Montgomery-form u32. Debug-asserts `raw < p`.
+    /// Wrap an already-Montgomery-form `u32` directly. Debug-asserts
+    /// `raw < p`. Most callers want [`from_canonical`](Self::from_canonical).
     #[inline]
     pub const fn from_raw(raw: u32) -> Self {
         debug_assert!(raw < P::PRIME);
         Self { raw, _p: PhantomData }
     }
 
-    /// Construct from canonical (non-Montgomery) `u32`. Reduces mod `p`.
+    /// Construct from a canonical (non-Montgomery) `u32`. Reduces `mod p`.
     #[inline]
     pub fn from_canonical(x: u32) -> Self {
         Self {
@@ -73,14 +96,16 @@ impl<P: MontyParameters> MontyField<P> {
         }
     }
 
-    /// Read back the canonical (non-Montgomery) `u32`.
+    /// Inverse of [`from_canonical`](Self::from_canonical): returns the
+    /// canonical (non-Montgomery) `u32` representative in `[0, p)`.
     #[inline]
     pub fn to_canonical(self) -> u32 {
         // `monty_reduce_split(0, self.raw)` = `self.raw · R^{-1} mod p`.
         monty_reduce_split::<P>(0, self.raw)
     }
 
-    /// Underlying Montgomery-form `u32`.
+    /// Underlying Montgomery-form `u32`. Use to bridge to kernel input
+    /// buffers (e.g. `client.create_from_slice` of raw `u32`s).
     #[inline]
     pub const fn raw(self) -> u32 {
         self.raw
@@ -131,7 +156,13 @@ impl<P: MontyParameters> core::ops::Neg for MontyField<P> {
 // real host body) with a sibling `mod mul_hi_u32` (type namespace,
 // containing the IR-builder `expand`).
 
-/// `(a · b) >> 32`, working on host *and* inside `#[cube]` bodies.
+/// `(a · b) >> 32` — the high half of a 32-bit multiply.
+///
+/// Bridge for cubecl 0.9 quirks (see this module's source): pairs a
+/// real host body with a sibling `mul_hi_u32::expand` module so the
+/// same name resolves both in regular Rust and inside `#[cube]`
+/// kernels. You should rarely call this directly — [`monty_mul()`]
+/// already invokes it as part of Montgomery reduction.
 #[inline]
 #[allow(clippy::cast_possible_truncation)]
 pub fn mul_hi_u32(a: u32, b: u32) -> u32 {
@@ -153,28 +184,37 @@ pub mod mul_hi_u32 {
 }
 
 // ---- Free `#[cube]` operations — single source for host AND cube ----
+//
+// All four operate on raw Montgomery `u32` values; inputs and outputs
+// are in `[0, p)`. They're the kernel-side counterpart to the operator
+// overloads on `MontyField<P>` — host code can use either form, but
+// `#[cube]` bodies must call these directly.
 
-/// `(a + b) mod p`. Inputs and output in `[0, p)`.
+/// `(a + b) mod p` on raw Montgomery `u32` values.
 #[cube]
 pub fn monty_add<P: MontyParameters>(a: u32, b: u32) -> u32 {
     let s = a + b;
     if s >= P::PRIME { s - P::PRIME } else { s }
 }
 
-/// `(a - b) mod p`. Inputs and output in `[0, p)`.
+/// `(a - b) mod p` on raw Montgomery `u32` values.
 #[cube]
 pub fn monty_sub<P: MontyParameters>(a: u32, b: u32) -> u32 {
     if a >= b { a - b } else { (a + P::PRIME) - b }
 }
 
-/// `-a mod p`. Input and output in `[0, p)`.
+/// `-a mod p` on a raw Montgomery `u32` value.
 #[cube]
 pub fn monty_neg<P: MontyParameters>(a: u32) -> u32 {
     let neg = P::PRIME - a;
     if neg >= P::PRIME { neg - P::PRIME } else { neg }
 }
 
-/// Montgomery multiplication: `(a · b · R^{-1}) mod p`, `R = 2^32`.
+/// Montgomery multiplication: `(a · b · R^{-1}) mod p` with `R = 2^32`.
+///
+/// Computes the full 64-bit product as `(hi, lo)` and feeds it to
+/// [`monty_reduce_split()`]. On native CUDA `mul_hi` lowers to a single
+/// `mul.hi.u32`; on WGSL it emulates via a schoolbook split (~10 ops).
 #[cube]
 pub fn monty_mul<P: MontyParameters>(a: u32, b: u32) -> u32 {
     let lo = a * b;                  // (a·b) mod 2^32 (wrapping)
@@ -182,7 +222,11 @@ pub fn monty_mul<P: MontyParameters>(a: u32, b: u32) -> u32 {
     monty_reduce_split::<P>(hi, lo)
 }
 
-/// Montgomery reduction on a 64-bit value held as `(hi, lo)`.
+/// Montgomery reduction on a 64-bit value passed as `(hi, lo)`.
+///
+/// Returns `((hi << 32) | lo) · R^{-1} mod p` reduced to `[0, p)`.
+/// Exposed for kernels that accumulate `u64` intermediates manually
+/// before reducing; for a plain `a · b` reduction, use [`monty_mul()`].
 #[cube]
 pub fn monty_reduce_split<P: MontyParameters>(hi: u32, lo: u32) -> u32 {
     // Step 1: t such that lo + t·p ≡ 0 (mod 2^32), via additive MU.

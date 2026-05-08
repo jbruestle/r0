@@ -1,6 +1,6 @@
 //! WebGPU NTT benchmark demo.
 //!
-//! Exposes two #[wasm_bindgen] entry points called from index.html:
+//! Exposes two `#[wasm_bindgen]` entry points called from index.html:
 //! - `diagnose()` -- initialize the wgpu device and return adapter/limit info.
 //! - `run_benchmark(log_n, batch, warmups, samples)` -- run the NTT and
 //!   return per-sample timings + summary stats.
