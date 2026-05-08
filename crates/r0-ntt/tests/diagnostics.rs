@@ -1,6 +1,10 @@
 //! Quick diagnostic: dump device info, limits, and heuristic plans for each runtime.
 //!
-//! Run with: cargo test -p r0-ntt --test diagnostics -- --ignored --nocapture
+//! Run with:
+//!   cargo test -p r0-ntt --features unstable-planner --test diagnostics -- \
+//!       --ignored --nocapture
+
+#![cfg(feature = "unstable-planner")]
 
 use cubecl::prelude::*;
 use r0_field::BabyBearParameters;

@@ -40,8 +40,8 @@ fn bench_ntt<P: MontyParameters, R: Runtime>(
     group.bench_function("run", |b| {
         b.iter(|| {
             match dir {
-                Direction::Forward => exec.forward_auto(&buf, log_n, batch),
-                Direction::Inverse => exec.inverse_auto(&buf, log_n, batch),
+                Direction::Forward => exec.forward(&buf, log_n, batch),
+                Direction::Inverse => exec.inverse(&buf, log_n, batch),
             }
             cubecl_common::reader::read_sync(client.sync()).expect("sync failed");
         });

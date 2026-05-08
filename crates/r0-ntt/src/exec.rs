@@ -7,8 +7,9 @@ use r0_field::MontyParameters;
 use crate::fwd_pass::ntt_fwd_pass;
 use crate::inv_pass::ntt_inv_pass;
 use crate::plan::{plan_heuristic, DeviceLimits, NttPlan, PassConfig};
-use crate::twiddles::{build_partial_fwd_twiddles, build_partial_inv_twiddles, n_inv};
-use crate::PARTIAL_TWIDDLE_LEN;
+use crate::twiddles::{
+    build_partial_fwd_twiddles, build_partial_inv_twiddles, n_inv, PARTIAL_TWIDDLE_LEN,
+};
 
 /// Default scratch buffer size: 64 MiB.
 const DEFAULT_SCRATCH_BYTES: usize = 64 * 1024 * 1024;
@@ -16,14 +17,13 @@ const ELEM_BYTES: usize = 4;
 
 /// NTT executor: owns twiddle tables and scratch memory on a device.
 ///
-/// Construct via [`NttExec::new`], then call [`forward`]/[`inverse`] with an
-/// explicit [`NttPlan`], or use [`forward_auto`]/[`inverse_auto`] for the
-/// heuristic-planned convenience path.
+/// Construct via [`NttExec::new`], then call [`forward`]/[`inverse`]. Both
+/// build a plan internally via a fixed heuristic. Explicit-plan variants
+/// (`forward_with_plan`/`inverse_with_plan`) are gated behind the
+/// `unstable-planner` feature; that surface is still in flux.
 ///
 /// [`forward`]: NttExec::forward
 /// [`inverse`]: NttExec::inverse
-/// [`forward_auto`]: NttExec::forward_auto
-/// [`inverse_auto`]: NttExec::inverse_auto
 pub struct NttExec<P: MontyParameters, R: Runtime> {
     client: ComputeClient<R>,
     fwd_twiddles: Vec<Handle>,
@@ -92,6 +92,10 @@ impl<P: MontyParameters, R: Runtime> NttExec<P, R> {
     }
 
     /// Device limits detected at construction time.
+    ///
+    /// Gated behind `unstable-planner`: callers that just want to run an
+    /// NTT don't need this — the heuristic uses limits internally.
+    #[cfg(feature = "unstable-planner")]
     pub fn limits(&self) -> &DeviceLimits {
         &self.limits
     }
@@ -101,8 +105,42 @@ impl<P: MontyParameters, R: Runtime> NttExec<P, R> {
         &self.client
     }
 
+    /// Forward NTT (R->N) of `batch` polynomials of size `2^log_n`,
+    /// in place on `buf`. Plan is picked via the internal heuristic.
+    pub fn forward(&self, buf: &Handle, log_n: u32, batch: usize) {
+        let plan = plan_heuristic(log_n, batch, &self.limits);
+        self.run_forward(buf, &plan, batch);
+    }
+
+    /// Inverse NTT (N->R) of `batch` polynomials of size `2^log_n`,
+    /// in place on `buf`. Plan is picked via the internal heuristic.
+    pub fn inverse(&self, buf: &Handle, log_n: u32, batch: usize) {
+        let plan = plan_heuristic(log_n, batch, &self.limits);
+        self.run_inverse(buf, &plan, batch);
+    }
+
     /// Forward NTT (R->N) using an explicit plan.
-    pub fn forward(&self, buf: &Handle, plan: &NttPlan, batch: usize) {
+    ///
+    /// Gated behind `unstable-planner`. Prefer [`forward`] unless you are
+    /// autotuning or otherwise specifically targeting a known-good plan.
+    ///
+    /// [`forward`]: NttExec::forward
+    #[cfg(feature = "unstable-planner")]
+    pub fn forward_with_plan(&self, buf: &Handle, plan: &NttPlan, batch: usize) {
+        self.run_forward(buf, plan, batch);
+    }
+
+    /// Inverse NTT (N->R) using an explicit plan.
+    ///
+    /// Gated behind `unstable-planner`. See [`forward_with_plan`].
+    ///
+    /// [`forward_with_plan`]: NttExec::forward_with_plan
+    #[cfg(feature = "unstable-planner")]
+    pub fn inverse_with_plan(&self, buf: &Handle, plan: &NttPlan, batch: usize) {
+        self.run_inverse(buf, plan, batch);
+    }
+
+    fn run_forward(&self, buf: &Handle, plan: &NttPlan, batch: usize) {
         assert!(
             plan.log_n >= 1 && plan.log_n <= self.max_log_n,
             "log_n={} out of range [1, {}]",
@@ -113,8 +151,7 @@ impl<P: MontyParameters, R: Runtime> NttExec<P, R> {
         self.run_batched(buf, tw, None, plan, batch, Direction::Forward);
     }
 
-    /// Inverse NTT (N->R) using an explicit plan.
-    pub fn inverse(&self, buf: &Handle, plan: &NttPlan, batch: usize) {
+    fn run_inverse(&self, buf: &Handle, plan: &NttPlan, batch: usize) {
         assert!(
             plan.log_n >= 1 && plan.log_n <= self.max_log_n,
             "log_n={} out of range [1, {}]",
@@ -124,18 +161,6 @@ impl<P: MontyParameters, R: Runtime> NttExec<P, R> {
         let tw = &self.inv_twiddles[plan.log_n as usize];
         let inv_n = &self.inv_n_table[plan.log_n as usize];
         self.run_batched(buf, tw, Some(inv_n), plan, batch, Direction::Inverse);
-    }
-
-    /// Forward NTT with automatic heuristic planning.
-    pub fn forward_auto(&self, buf: &Handle, log_n: u32, batch: usize) {
-        let plan = plan_heuristic(log_n, batch, &self.limits);
-        self.forward(buf, &plan, batch);
-    }
-
-    /// Inverse NTT with automatic heuristic planning.
-    pub fn inverse_auto(&self, buf: &Handle, log_n: u32, batch: usize) {
-        let plan = plan_heuristic(log_n, batch, &self.limits);
-        self.inverse(buf, &plan, batch);
     }
 
     fn run_batched(

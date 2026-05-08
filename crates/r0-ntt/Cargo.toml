@@ -11,6 +11,12 @@ default = ["cuda", "wgpu", "cpu"]
 cuda = ["cubecl/cuda"]
 wgpu = ["cubecl/wgpu"]
 cpu = ["cubecl/cpu"]
+# Exposes the planner (NttPlan, PassConfig, plan_heuristic, validate_plan,
+# enumerate_valid_plans, heuristic_score, DeviceLimits) and the
+# explicit-plan executor methods (forward_with_plan, inverse_with_plan,
+# limits). Off by default — these surfaces are still in flux and should
+# not be relied on by downstream crates.
+unstable-planner = []
 
 [dependencies]
 r0-field = { path = "../r0-field" }

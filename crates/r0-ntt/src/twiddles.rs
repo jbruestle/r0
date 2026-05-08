@@ -18,7 +18,11 @@ fn pow_field<P: MontyParameters>(mut base: MontyField<P>, mut exp: u32) -> Monty
 /// Build a flat forward-twiddle table `[w^0, w^1, ..., w^(N/2 - 1)]` in
 /// Montgomery form, where `w` is a primitive `N`-th root of unity
 /// (`N = 2^log_n`). For `log_n == 0` returns an empty vector.
-pub fn build_fwd_twiddles<P: MontyParameters>(log_n: u32) -> Vec<u32> {
+///
+/// Reference implementation kept around to cross-check the partial
+/// (windowed) tables — the kernels never need the flat form.
+#[cfg(test)]
+fn build_fwd_twiddles<P: MontyParameters>(log_n: u32) -> Vec<u32> {
     if log_n == 0 {
         return Vec::new();
     }
@@ -34,8 +38,9 @@ pub fn build_fwd_twiddles<P: MontyParameters>(log_n: u32) -> Vec<u32> {
 }
 
 /// Build a flat inverse-twiddle table `[w^{-0}, w^{-1}, ..., w^{-(N/2-1)}]`
-/// in Montgomery form. Used by the GS-DIF inverse kernel.
-pub fn build_inv_twiddles<P: MontyParameters>(log_n: u32) -> Vec<u32> {
+/// in Montgomery form. Companion reference impl to [`build_fwd_twiddles`].
+#[cfg(test)]
+fn build_inv_twiddles<P: MontyParameters>(log_n: u32) -> Vec<u32> {
     if log_n == 0 {
         return Vec::new();
     }
@@ -223,9 +228,11 @@ mod tests {
     }
 }
 
-/// Host-side reconstruction of w^k from a partial twiddle table (for testing).
-/// The kernel does this same computation on-device.
-pub fn reconstruct_twiddle<P: MontyParameters>(partial: &[u32], k: u32) -> u32 {
+/// Host-side reconstruction of `w^k` from a partial twiddle table.
+/// Mirrors what the kernel's [`crate::pass_common::reconstruct_twiddle`]
+/// computes on-device; used to sanity-check that path.
+#[cfg(test)]
+fn reconstruct_twiddle<P: MontyParameters>(partial: &[u32], k: u32) -> u32 {
     let k_0 = (k & (WINDOW_SIZE as u32 - 1)) as usize;
     let mut acc = MontyField::<P>::from_raw(partial[k_0]);
     for w in 1..NUM_WINDOWS {

@@ -1,6 +1,10 @@
 //! Autotune: enumerate valid plans, benchmark each, report results.
 //!
-//! Run with: cargo test -p r0-ntt --test autotune -- --ignored --nocapture
+//! Run with:
+//!   cargo test -p r0-ntt --features unstable-planner --test autotune -- \
+//!       --ignored --nocapture
+
+#![cfg(feature = "unstable-planner")]
 
 use std::time::{Duration, Instant};
 
@@ -68,7 +72,7 @@ where
             for (i, plan) in plans.into_iter().enumerate() {
                 // Warmup.
                 for _ in 0..warmup {
-                    exec.forward(&buf, &plan, batch);
+                    exec.forward_with_plan(&buf, &plan, batch);
                     cubecl_common::reader::read_sync(client.sync()).expect("sync failed");
                 }
 
@@ -76,7 +80,7 @@ where
                 let mut best_time = Duration::MAX;
                 for _ in 0..samples {
                     let start = Instant::now();
-                    exec.forward(&buf, &plan, batch);
+                    exec.forward_with_plan(&buf, &plan, batch);
                     cubecl_common::reader::read_sync(client.sync()).expect("sync failed");
                     let elapsed = start.elapsed();
                     best_time = best_time.min(elapsed);

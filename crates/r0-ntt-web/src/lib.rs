@@ -123,7 +123,7 @@ pub async fn run_benchmark(
 
     // Warmups.
     for _ in 0..warmups {
-        exec.forward(&buf, &plan, batch as usize);
+        exec.forward_with_plan(&buf, &plan, batch as usize);
         client
             .sync()
             .await
@@ -134,7 +134,7 @@ pub async fn run_benchmark(
     let mut times_us = Vec::with_capacity(samples as usize);
     for _ in 0..samples {
         let t0 = Instant::now();
-        exec.forward(&buf, &plan, batch as usize);
+        exec.forward_with_plan(&buf, &plan, batch as usize);
         client
             .sync()
             .await

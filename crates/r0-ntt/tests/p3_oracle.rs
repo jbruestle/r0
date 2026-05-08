@@ -86,7 +86,7 @@ where
     }
 
     let buf = client.create_from_slice(u32::as_bytes(&all_input));
-    exec.forward_auto(&buf, log_n, batch);
+    exec.forward(&buf, log_n, batch);
 
     let bytes = client.read_one(buf);
     let actual: Vec<u32> = u32::from_bytes(&bytes)
@@ -135,7 +135,7 @@ where
     }
 
     let buf = client.create_from_slice(u32::as_bytes(&all_input));
-    exec.inverse_auto(&buf, log_n, batch);
+    exec.inverse(&buf, log_n, batch);
 
     let bytes = client.read_one(buf);
     let actual: Vec<u32> = u32::from_bytes(&bytes)
@@ -173,8 +173,8 @@ where
     let original = all_input.clone();
 
     let buf = client.create_from_slice(u32::as_bytes(&all_input));
-    exec.forward_auto(&buf, log_n, batch);
-    exec.inverse_auto(&buf, log_n, batch);
+    exec.forward(&buf, log_n, batch);
+    exec.inverse(&buf, log_n, batch);
 
     let bytes = client.read_one(buf);
     let result = u32::from_bytes(&bytes).to_vec();
