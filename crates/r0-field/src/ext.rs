@@ -114,6 +114,19 @@ impl<P: MontyParameters> BaseElem<P> {
     }
 }
 
+/// `#[cube]`-callable constructor for [`BaseElem<P>`] from a raw
+/// Montgomery-form `u32`. The host [`BaseElem::from_raw`] is `const fn`
+/// (not callable from cube IR) and the struct's `_p: PhantomData<P>` is
+/// private; this free function is the bridge for downstream `#[cube]`
+/// kernels (e.g. `r0-polynomial`'s `PairScanLayout::unpack`).
+#[cube]
+pub fn base_elem_from_raw<P: MontyParameters>(raw: u32) -> BaseElem<P> {
+    BaseElem::<P> {
+        raw,
+        _p: PhantomData,
+    }
+}
+
 #[cube]
 impl<P: MontyParameters> ExtField for BaseElem<P> {
     type Base = P;

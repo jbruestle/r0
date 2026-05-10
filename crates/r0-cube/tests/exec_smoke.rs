@@ -34,6 +34,7 @@ pub struct SumU32 {
 #[cube]
 impl Monoid for SumU32 {
     type Repr = u32;
+    const REPR_LANES: u32 = 1;
     fn identity() -> Self {
         SumU32 {
             v: 0u32,
@@ -54,6 +55,9 @@ impl Monoid for SumU32 {
             v: repr,
             _p: PhantomData,
         }
+    }
+    fn alloc_scratch(#[comptime] count: u32) -> SharedMemory<u32> {
+        SharedMemory::<u32>::new(comptime!(count as usize))
     }
 }
 

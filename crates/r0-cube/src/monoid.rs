@@ -32,8 +32,29 @@
 //!
 //! Implementations live with the type the monoid wraps, not in r0-cube:
 //! `Sum<F>` and `PairScan<F>` over `r0-field` elements live alongside
-//! `Ext4` / `Ext5` in `r0-field`; recipe-specific monoids live with
-//! their recipe. r0-cube intentionally ships no impls — only the shape.
+//! `Ext4` / `Ext5` in `r0-field` / `r0-polynomial`; recipe-specific monoids
+//! live with their recipe. r0-cube intentionally ships no impls — only the
+//! shape.
+//!
+//! # One-word vs multi-word monoids
+//!
+//! For one-word monoids (e.g. `(u32, +)`) the natural `Repr` is `u32`. For
+//! multi-word monoids (PairScan over a degree-`D` field, where each value
+//! is `2D` u32s) `Repr` is `Line<u32>` — cubecl's SIMD-style vector that
+//! maps to `vec*<u32>` on WGSL / packed `uint*` on CUDA. cubecl 0.9's
+//! `Line<P>` does not carry its lane count in the Rust type; the lane
+//! count is attached to each value at IR-construction time. Two
+//! consequences:
+//!
+//! 1. The host needs the lane count separately to size `ArrayArg`s and
+//!    spine buffers — exposed via [`REPR_LANES`](Monoid::REPR_LANES).
+//! 2. `SharedMemory<Line<u32>>` must be created via
+//!    `SharedMemory::<u32>::new_lined(count, line_size)` rather than
+//!    `SharedMemory::<M::Repr>::new(count)` — the latter forgets the
+//!    lane count. Each impl owns this via [`alloc_scratch`](Monoid::alloc_scratch).
+//!
+//! For one-word `Repr = u32` impls both pieces collapse to defaults
+//! (`REPR_LANES = 1`, `alloc_scratch` calls `SharedMemory::<u32>::new`).
 
 use cubecl::prelude::*;
 
@@ -48,6 +69,13 @@ pub trait Monoid: CubeType + Copy + Clone + Sized + Send + Sync + 'static {
     /// for one-word monoids, `Line<u32>` for multi-word.
     type Repr: CubePrimitive;
 
+    /// Number of `u32` lanes per `Repr` value. `1` for `Repr = u32`,
+    /// `N` for `Repr = Line<u32>` with line size `N`. The host reads
+    /// this when sizing `ArrayArg` line sizes and spine byte budgets,
+    /// since cubecl 0.9's `Line<u32>` doesn't carry lane count in the
+    /// Rust type.
+    const REPR_LANES: u32;
+
     /// Identity: `combine(identity(), x) == x == combine(x, identity())`.
     fn identity() -> Self;
 
@@ -60,4 +88,10 @@ pub trait Monoid: CubeType + Copy + Clone + Sized + Send + Sync + 'static {
 
     /// Inverse of [`to_repr`](Self::to_repr).
     fn from_repr(repr: Self::Repr) -> Self;
+
+    /// Allocate `count` slots of `Repr` shared memory. For `Repr = u32`
+    /// this is a 1-liner over `SharedMemory::new`; for `Repr = Line<u32>`
+    /// it must thread the line size to `SharedMemory::<u32>::new_lined`,
+    /// since `Line<u32>` doesn't statically encode the lane count.
+    fn alloc_scratch(#[comptime] count: u32) -> SharedMemory<Self::Repr>;
 }

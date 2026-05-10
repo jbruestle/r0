@@ -72,10 +72,14 @@ pub use baby_bear::{
 pub use koala_bear::{KoalaBear, KoalaBear4, KoalaBear4Parameters, KoalaBearParameters};
 
 mod ext;
-pub use ext::{BaseElem, ExtField};
+pub use ext::{base_elem_from_raw, BaseElem, ExtField};
 
 mod ext4;
-pub use ext4::{ext4_add, ext4_mul, ext4_neg, ext4_sub, BinomialExt4Parameters, Ext4};
+pub use ext4::{
+    ext4_add, ext4_from_raws, ext4_mul, ext4_neg, ext4_sub, BinomialExt4Parameters, Ext4,
+};
 
 mod ext5;
-pub use ext5::{ext5_add, ext5_mul, ext5_neg, ext5_sub, BinomialExt5Parameters, Ext5};
+pub use ext5::{
+    ext5_add, ext5_from_raws, ext5_mul, ext5_neg, ext5_sub, BinomialExt5Parameters, Ext5,
+};

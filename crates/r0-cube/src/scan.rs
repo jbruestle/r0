@@ -9,6 +9,12 @@
 //! `combine` and at the function boundary. That sidesteps cubecl 0.9's
 //! restrictions on mutating, if-else'ing, and shared-memory-indexing
 //! arbitrary `CubeType` values — see the `monoid` module docs.
+//!
+//! The shared-memory scratch is allocated via [`Monoid::alloc_scratch`]
+//! rather than directly with `SharedMemory::<M::Repr>::new` because
+//! cubecl 0.9's `Line<u32>` doesn't statically encode its lane count —
+//! multi-lane `Repr`s have to go through `SharedMemory::<u32>::new_lined`,
+//! which the impl knows how to do but generic code does not.
 
 use cubecl::prelude::*;
 

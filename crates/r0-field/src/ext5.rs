@@ -127,6 +127,28 @@ impl<P: BinomialExt5Parameters> core::ops::Neg for Ext5<P> {
 
 // ---- Free `#[cube]` ops ----
 
+/// `#[cube]`-callable constructor for [`Ext5<P>`] from raw Montgomery-form
+/// limbs. The host [`Ext5::from_raw`] is `const fn` (not callable from
+/// cube IR) and the struct's `_p: PhantomData<P>` is private; this free
+/// function is the bridge for downstream `#[cube]` kernels.
+#[cube]
+pub fn ext5_from_raws<P: BinomialExt5Parameters>(
+    c0: u32,
+    c1: u32,
+    c2: u32,
+    c3: u32,
+    c4: u32,
+) -> Ext5<P> {
+    Ext5::<P> {
+        c0,
+        c1,
+        c2,
+        c3,
+        c4,
+        _p: PhantomData,
+    }
+}
+
 #[cube]
 pub fn ext5_add<P: BinomialExt5Parameters>(a: Ext5<P>, b: Ext5<P>) -> Ext5<P> {
     Ext5::<P> {

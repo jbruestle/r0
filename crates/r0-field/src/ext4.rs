@@ -149,6 +149,26 @@ impl<P: BinomialExt4Parameters> core::ops::Neg for Ext4<P> {
 
 // ---- Free #[cube] ops (single source for host AND cube) ----
 
+/// `#[cube]`-callable constructor for [`Ext4<P>`] from raw Montgomery-form
+/// limbs. The host [`Ext4::from_raw`] is `const fn` (not callable from
+/// cube IR) and the struct's `_p: PhantomData<P>` is private; this free
+/// function is the bridge for downstream `#[cube]` kernels.
+#[cube]
+pub fn ext4_from_raws<P: BinomialExt4Parameters>(
+    c0: u32,
+    c1: u32,
+    c2: u32,
+    c3: u32,
+) -> Ext4<P> {
+    Ext4::<P> {
+        c0,
+        c1,
+        c2,
+        c3,
+        _p: PhantomData,
+    }
+}
+
 /// Componentwise addition.
 #[cube]
 pub fn ext4_add<P: BinomialExt4Parameters>(a: Ext4<P>, b: Ext4<P>) -> Ext4<P> {

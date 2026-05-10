@@ -20,6 +20,11 @@ CUDA, wgpu (Vulkan/Metal/WebGPU), and CPU.
 - [`r0-ntt`](crates/r0-ntt) — batched forward/inverse NTT over those
   fields. See [the crate README](crates/r0-ntt/README.md) for design
   and performance.
+- [`r0-polynomial`](crates/r0-polynomial) — polynomial-level operations
+  on `r0-field` polynomials, on top of `r0-cube`'s scan substrate.
+  Currently division by `(x − z)`; future work includes evaluation,
+  FRI fold, and OOD evaluation. See
+  [the crate README](crates/r0-polynomial/README.md) for design.
 - [`r0-ntt-web`](crates/r0-ntt-web) — browser WebGPU benchmark demo
   for `r0-ntt`.
 

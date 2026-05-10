@@ -122,7 +122,11 @@ impl<R: Runtime, Recipe: ScanRecipe> ScanExec<R, Recipe> {
         let num_warps = 1u32 << (log_wg - log_warp);
         let max_levels = spine_levels_needed(log_n_max, log_wg);
 
-        let repr_bytes = <<Recipe::Monoid as Monoid>::Repr as CubePrimitive>::type_size() as u64;
+        // `Repr::type_size()` returns bytes per *lane* (4 for u32 / Line<u32>);
+        // multi-lane Reprs need it scaled by REPR_LANES.
+        let lane_bytes = <<Recipe::Monoid as Monoid>::Repr as CubePrimitive>::type_size() as u64;
+        let lanes = <Recipe::Monoid as Monoid>::REPR_LANES as u64;
+        let repr_bytes = lane_bytes * lanes;
         let mut spines = Vec::with_capacity(max_levels as usize + 1);
         let mut byte_offset = 0u64;
         for level in 0..=max_levels {
@@ -220,9 +224,10 @@ impl<R: Runtime, Recipe: ScanRecipe> ScanExec<R, Recipe> {
     }
 
     fn spine_elem_count(&self, level: u32) -> usize {
-        let repr_bytes =
-            <<Recipe::Monoid as Monoid>::Repr as CubePrimitive>::type_size();
-        (self.spines[level as usize].size() / repr_bytes as u64) as usize
+        let lane_bytes =
+            <<Recipe::Monoid as Monoid>::Repr as CubePrimitive>::type_size() as u64;
+        let lanes = <Recipe::Monoid as Monoid>::REPR_LANES as u64;
+        (self.spines[level as usize].size() / (lane_bytes * lanes)) as usize
     }
 
     fn launch_single_block(
@@ -271,6 +276,7 @@ impl<R: Runtime, Recipe: ScanRecipe> ScanExec<R, Recipe> {
         let in_count = (input.size() / U32_BYTES) as usize;
         let ctx_count = (contexts.size() / U32_BYTES) as usize;
         let spine_elems = self.spine_elem_count(0);
+        let lanes = <Recipe::Monoid as Monoid>::REPR_LANES as usize;
         let n = 1u32 << log_n;
 
         unsafe {
@@ -283,7 +289,7 @@ impl<R: Runtime, Recipe: ScanRecipe> ScanExec<R, Recipe> {
                 ArrayArg::from_raw_parts::<<Recipe::Monoid as Monoid>::Repr>(
                     &self.spines[0],
                     spine_elems,
-                    1,
+                    lanes,
                 ),
                 self.log_warp,
                 self.log_wg,
@@ -307,6 +313,7 @@ impl<R: Runtime, Recipe: ScanRecipe> ScanExec<R, Recipe> {
         let spine_upper = &self.spines[level as usize];
         let lower_count = self.spine_elem_count(level - 1);
         let upper_count = self.spine_elem_count(level);
+        let lanes = <Recipe::Monoid as Monoid>::REPR_LANES as usize;
 
         unsafe {
             k_reduce_spine::launch_unchecked::<Recipe::Monoid, R>(
@@ -316,12 +323,12 @@ impl<R: Runtime, Recipe: ScanRecipe> ScanExec<R, Recipe> {
                 ArrayArg::from_raw_parts::<<Recipe::Monoid as Monoid>::Repr>(
                     spine_lower,
                     lower_count,
-                    1,
+                    lanes,
                 ),
                 ArrayArg::from_raw_parts::<<Recipe::Monoid as Monoid>::Repr>(
                     spine_upper,
                     upper_count,
-                    1,
+                    lanes,
                 ),
                 self.log_warp,
                 self.log_wg,
@@ -336,6 +343,7 @@ impl<R: Runtime, Recipe: ScanRecipe> ScanExec<R, Recipe> {
     fn launch_spine_top_scan(&self, level: u32, batch_count: u32, nb_top: u32) {
         let spine_top = &self.spines[level as usize];
         let count = self.spine_elem_count(level);
+        let lanes = <Recipe::Monoid as Monoid>::REPR_LANES as usize;
 
         unsafe {
             spine_top_scan::launch_unchecked::<Recipe::Monoid, R>(
@@ -343,7 +351,7 @@ impl<R: Runtime, Recipe: ScanRecipe> ScanExec<R, Recipe> {
                 CubeCount::Static(1, batch_count, 1),
                 CubeDim::new_1d(1u32 << self.log_wg),
                 ArrayArg::from_raw_parts::<<Recipe::Monoid as Monoid>::Repr>(
-                    spine_top, count, 1,
+                    spine_top, count, lanes,
                 ),
                 self.log_warp,
                 self.log_wg,
@@ -365,6 +373,7 @@ impl<R: Runtime, Recipe: ScanRecipe> ScanExec<R, Recipe> {
         let spine_upper = &self.spines[level as usize];
         let lower_count = self.spine_elem_count(level - 1);
         let upper_count = self.spine_elem_count(level);
+        let lanes = <Recipe::Monoid as Monoid>::REPR_LANES as usize;
 
         // One workgroup per upper-level slot (each carries `wg_size`
         // lower-level slots).
@@ -376,12 +385,12 @@ impl<R: Runtime, Recipe: ScanRecipe> ScanExec<R, Recipe> {
                 ArrayArg::from_raw_parts::<<Recipe::Monoid as Monoid>::Repr>(
                     spine_lower,
                     lower_count,
-                    1,
+                    lanes,
                 ),
                 ArrayArg::from_raw_parts::<<Recipe::Monoid as Monoid>::Repr>(
                     spine_upper,
                     upper_count,
-                    1,
+                    lanes,
                 ),
                 self.log_warp,
                 self.log_wg,
@@ -406,6 +415,7 @@ impl<R: Runtime, Recipe: ScanRecipe> ScanExec<R, Recipe> {
         let out_count = (output.size() / U32_BYTES) as usize;
         let ctx_count = (contexts.size() / U32_BYTES) as usize;
         let spine_elems = self.spine_elem_count(0);
+        let lanes = <Recipe::Monoid as Monoid>::REPR_LANES as usize;
         let n = 1u32 << log_n;
 
         unsafe {
@@ -418,7 +428,7 @@ impl<R: Runtime, Recipe: ScanRecipe> ScanExec<R, Recipe> {
                 ArrayArg::from_raw_parts::<<Recipe::Monoid as Monoid>::Repr>(
                     &self.spines[0],
                     spine_elems,
-                    1,
+                    lanes,
                 ),
                 ArrayArg::from_raw_parts::<u32>(output, out_count, 1),
                 self.log_warp,
@@ -451,9 +461,7 @@ fn k_single_block<Recipe: ScanRecipe>(
     let batch = CUBE_POS_Y;
     let scan_pos = UNIT_POS;
 
-    let mut scratch = SharedMemory::<<Recipe::Monoid as Monoid>::Repr>::new(comptime!(
-        num_warps as usize
-    ));
+    let mut scratch = <Recipe::Monoid as Monoid>::alloc_scratch(num_warps);
 
     let v = Recipe::load(contexts, input, batch, scan_pos, n, batch_count);
     let scanned = block_inclusive_scan::<Recipe::Monoid>(v, &mut scratch, log_warp, log_wg);
@@ -479,9 +487,7 @@ fn k0_reduce<Recipe: ScanRecipe>(
     let tid = UNIT_POS;
     let scan_pos = block_id * comptime!(1u32 << log_wg) + tid;
 
-    let mut scratch = SharedMemory::<<Recipe::Monoid as Monoid>::Repr>::new(comptime!(
-        num_warps as usize
-    ));
+    let mut scratch = <Recipe::Monoid as Monoid>::alloc_scratch(num_warps);
 
     let v = Recipe::load(contexts, input, batch, scan_pos, n, batch_count);
     let total = block_inclusive_reduce::<Recipe::Monoid>(v, &mut scratch, log_warp, log_wg);
@@ -509,8 +515,7 @@ fn k_reduce_spine<M: Monoid>(
     let tid = UNIT_POS;
     let pos_lower = block_upper * comptime!(1u32 << log_wg) + tid;
 
-    let mut scratch =
-        SharedMemory::<M::Repr>::new(comptime!(num_warps as usize));
+    let mut scratch = M::alloc_scratch(num_warps);
 
     let safe_idx = if pos_lower < nb_lower {
         pos_lower
@@ -543,8 +548,7 @@ fn spine_top_scan<M: Monoid>(
 ) {
     let batch = CUBE_POS_Y;
     let tid = UNIT_POS;
-    let mut scratch =
-        SharedMemory::<M::Repr>::new(comptime!(num_warps as usize));
+    let mut scratch = M::alloc_scratch(num_warps);
 
     let safe_idx = if tid < num_blocks {
         tid
@@ -582,8 +586,7 @@ fn k_apply_spine<M: Monoid>(
     let tid = UNIT_POS;
     let pos_lower = group * comptime!(1u32 << log_wg) + tid;
 
-    let mut scratch =
-        SharedMemory::<M::Repr>::new(comptime!(num_warps as usize));
+    let mut scratch = M::alloc_scratch(num_warps);
 
     let safe_idx = if pos_lower < nb_lower {
         pos_lower
@@ -639,9 +642,7 @@ fn k0_apply<Recipe: ScanRecipe>(
     let tid = UNIT_POS;
     let scan_pos = block_id * comptime!(1u32 << log_wg) + tid;
 
-    let mut scratch = SharedMemory::<<Recipe::Monoid as Monoid>::Repr>::new(comptime!(
-        num_warps as usize
-    ));
+    let mut scratch = <Recipe::Monoid as Monoid>::alloc_scratch(num_warps);
 
     let v = Recipe::load(contexts, input, batch, scan_pos, n, batch_count);
     let scanned = block_inclusive_scan::<Recipe::Monoid>(v, &mut scratch, log_warp, log_wg);
