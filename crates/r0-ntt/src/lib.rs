@@ -12,7 +12,8 @@
 //!
 //! ```ignore
 //! use r0_ntt::NttExec;
-//! use r0_field::{BabyBearParameters, Device};
+//! use r0_cube::Device;
+//! use r0_field::BabyBearParameters;
 //! use cubecl::cuda::CudaRuntime;
 //!
 //! let device = Device::<CudaRuntime>::acquire();

@@ -7,9 +7,9 @@ use cubecl::cpu::CpuRuntime;
 use cubecl::prelude::*;
 use cubecl::wgpu::WgpuRuntime;
 
+use r0_cube::Device;
 use r0_field::{
-    monty_mul, BabyBear, BabyBearParameters, Device, KoalaBearParameters, MontyField,
-    MontyParameters,
+    monty_mul, BabyBear, BabyBearParameters, KoalaBearParameters, MontyField, MontyParameters,
 };
 
 #[cube(launch_unchecked)]

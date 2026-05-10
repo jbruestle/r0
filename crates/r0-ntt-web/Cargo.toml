@@ -12,6 +12,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 r0-ntt = { path = "../r0-ntt", default-features = false, features = ["wgpu", "unstable-planner"] }
 r0-field = { path = "../r0-field" }
+r0-cube = { path = "../r0-cube" }
 cubecl = { workspace = true, default-features = false, features = ["wgpu", "std"] }
 cubecl-wgpu = "0.9.0"
 cubecl-runtime = "0.9.0"

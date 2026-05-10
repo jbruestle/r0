@@ -10,7 +10,8 @@ use std::time::{Duration, Instant};
 
 use cubecl::prelude::*;
 
-use r0_field::{BabyBearParameters, Device, MontyParameters};
+use r0_cube::Device;
+use r0_field::{BabyBearParameters, MontyParameters};
 use r0_ntt::{enumerate_valid_plans, heuristic_score, NttExec, NttPlan};
 
 fn autotune<P: MontyParameters, R: Runtime>(

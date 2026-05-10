@@ -9,7 +9,8 @@ use cubecl::prelude::*;
 use p3_dft::{Radix2Dit, TwoAdicSubgroupDft};
 use p3_field::{PrimeField32, TwoAdicField};
 
-use r0_field::{BabyBearParameters, Device, KoalaBearParameters, MontyField, MontyParameters};
+use r0_cube::Device;
+use r0_field::{BabyBearParameters, KoalaBearParameters, MontyField, MontyParameters};
 use r0_ntt::{bit_reverse_in_place, NttExec};
 
 // ---------------------------------------------------------------------------

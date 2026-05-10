@@ -23,6 +23,7 @@ cpu = ["cubecl/cpu"]
 unstable-planner = []
 
 [dependencies]
+r0-cube = { path = "../r0-cube" }
 r0-field = { path = "../r0-field" }
 cubecl = { workspace = true }
 cubecl-core = { workspace = true }

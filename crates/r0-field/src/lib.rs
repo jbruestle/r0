@@ -49,23 +49,12 @@
 //! implements [`ExtField`] with `DEGREE = 1`, so a single
 //! `<F: ExtField>` kernel covers both cases.
 //!
-//! # Device locking
-//!
-//! [`Device<R>`] is a process-shared exclusive lock around a cubecl
-//! device, keyed per runtime type. Acquire one per scope that touches
-//! kernels (typically per `#[test]`) and pass `&device` to executor
-//! constructors; the lock keeps cargo's per-binary test parallelism
-//! from launching concurrent work against the same GPU.
-//!
 //! # Correctness
 //!
 //! Base-field constants and the extensions' `W` cross-check against
 //! Plonky3 in `tests/ext_p3_oracle.rs`; arithmetic round-trips via
 //! property tests there and in `tests/cube_smoke.rs` /
 //! `tests/ext_cube_smoke.rs` for the cube path on every backend.
-
-mod device;
-pub use device::Device;
 
 mod monty;
 

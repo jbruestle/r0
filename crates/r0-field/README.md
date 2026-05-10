@@ -20,10 +20,6 @@ the rustdoc.
 - **`ExtField` trait**: lets kernels (e.g. polynomial division) be generic
   over the inner field, with `BaseElem<P>` as the degree-1 bridge so the
   same kernel handles base and extension uniformly.
-- **`Device<R>` lock**: process-shared exclusive guard around a cubecl
-  device, used by `cargo test` to keep concurrent test binaries from
-  trampling each other on a single GPU.
-
 Out of scope: non-binomial extensions (KoalaBear^5 doesn't exist as a
 binomial extension since `gcd(5, p_KB − 1) = 1`); we'd reach for trinomials
 if the security story ever demanded it.
@@ -98,35 +94,7 @@ This layout buys two things at once:
 `ExtField::load` / `store` carry `base` (the polynomial's u32 offset) and
 `n` (the stride) so the kernel folds in batch indexing cleanly.
 
-## 4. `Device<R>` — process-shared device lock
-
-cubecl backends like wgpu share a single GPU across the host, and `cargo
-test` runs each `tests/*.rs` integration file as its own process **in
-parallel**. Concurrent kernel launches from different test binaries can
-saturate the device and fail with timeouts. Within a process, a
-`parking_lot::Mutex` would suffice; across processes it doesn't.
-
-`Device<R>` wraps `R::Device` together with a process-shared
-[`flock(2)`-based](https://docs.rs/fs2) advisory lock keyed per cubecl
-runtime. Constructors of executors (`NttExec::new`, future
-`PolyDivExec::new`, …) take `&Device<R>`; the lock holds for the
-`Device`'s lifetime.
-
-```rust
-#[test]
-fn my_kernel_test() {
-    let device = Device::<WgpuRuntime>::acquire();   // blocks if held elsewhere
-    let exec = NttExec::<BabyBearParameters, _>::new(&device, 0);
-    // … kernel work …
-}   // device drops, lock releases
-```
-
-Locks are per-runtime, so wgpu and CPU tests do not block each other —
-concurrency is reduced only where it must be. On `wasm32` (browser
-builds) the lock is a no-op since there are no concurrent processes to
-coordinate with.
-
-## 5. cubecl 0.9 quirks worth knowing
+## 4. cubecl 0.9 quirks worth knowing
 
 The crate works around these in-place; they bite anyone writing new
 `#[cube]` code in the workspace, so they're worth being aware of.
@@ -147,7 +115,7 @@ The crate works around these in-place; they bite anyone writing new
 - **`PhantomData<P>` inside a `CubeType`-derived struct needs the
   `#[cube(comptime)]` attribute** so cubecl knows it carries no IR data.
 
-## 6. Testing
+## 5. Testing
 
 - **`tests/ext_p3_oracle.rs`** — proptest cross-check vs Plonky3's
   `BinomialExtensionField<F, D>` for BB^4 / KB^4 / BB^5 (add, sub, mul,
@@ -161,12 +129,11 @@ The crate works around these in-place; they bite anyone writing new
 - **Lib unit tests** — `MONT_ONE` consistency, `BaseElem<P>` zero-cost
   size assertion.
 
-## 7. File layout
+## 6. File layout
 
 ```
 src/
   lib.rs        -- module re-exports + crate-level docs
-  device.rs     -- Device<R> cross-process lock
   monty.rs      -- MontyParameters trait, MontyField<P>, monty_* #[cube] fns
   baby_bear.rs  -- BabyBearParameters + BabyBear4Parameters + BabyBear5Parameters
   koala_bear.rs -- KoalaBearParameters + KoalaBear4Parameters
@@ -174,3 +141,6 @@ src/
   ext4.rs       -- Ext4<P>, ext4_* #[cube] fns, ExtField impl
   ext5.rs       -- Ext5<P>, ext5_* #[cube] fns, ExtField impl
 ```
+
+The cross-process device lock used by every kernel-launching test
+(`Device<R>`) lives in [`r0-cube`](../r0-cube), not here.

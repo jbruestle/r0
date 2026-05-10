@@ -97,9 +97,9 @@ you ever need to bridge another panicking-on-host primitive.
 cubecl's wgpu backend hands out one device per process; `cargo test` runs
 each integration-test binary as its own process *in parallel*. Multiple
 binaries fighting for one GPU = timeouts and flaky failures. Solution:
-`r0_field::Device<R>` (will move to `r0_cube`) wraps `R::Device` with a
-flock-based file lock keyed per runtime. Acquire one per test, pass
-`&device` to executor constructors.
+`r0_cube::Device<R>` wraps `R::Device` with a flock-based file lock keyed
+per runtime. Acquire one per test, pass `&device` to executor
+constructors.
 
 ### Layout via `Array<u32>` + load/store helpers
 
@@ -163,9 +163,9 @@ and lets one `Array<u32>` carry any extension shape.
    codegen is the youngest backend and has the most rough edges). Run
    the same kernel under `CpuRuntime` to confirm the algorithm is right.
 3. **Test passes alone but fails in `cargo test --workspace`** —
-   GPU contention. Make sure the test acquires a `Device<R>` (or
-   `Device::<R>::acquire()` once that's in `r0-cube`). The cross-process
-   flock serializes binaries.
+   GPU contention. Make sure the test acquires an `r0_cube::Device<R>`
+   via `Device::<R>::acquire()`. The cross-process flock serializes
+   binaries.
 4. **Mysterious panic from `cudarc` mentioning `libcuda.dylib`** — you're
    on a non-CUDA host with the `cuda` feature on. Drop the feature.
 

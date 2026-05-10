@@ -8,7 +8,8 @@
 use cubecl::prelude::*;
 use cubecl::wgpu::WgpuRuntime;
 use cubecl_wgpu::{init_setup_async, AutoGraphicsApi, RuntimeOptions, WgpuDevice};
-use r0_field::{BabyBearParameters, Device, MontyField, MontyParameters};
+use r0_cube::Device;
+use r0_field::{BabyBearParameters, MontyField, MontyParameters};
 use r0_ntt::{plan_heuristic, NttExec};
 use wasm_bindgen::prelude::*;
 use web_time::Instant;

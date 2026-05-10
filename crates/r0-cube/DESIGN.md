@@ -47,8 +47,9 @@ tests/
                        plumbing bugs before any field-aware recipe touches it.
 ```
 
-`Device<R>` migrates over from `r0-field` once this crate exists; r0-field
-re-exports it for one transitional commit then drops the re-export.
+`Device<R>` moves over from `r0-field` in the same commit that creates this
+crate, with all `r0_field::Device` imports across the workspace switched to
+`r0_cube::Device` in the same change — no transitional re-export.
 
 ## 3. The Monoid trait
 

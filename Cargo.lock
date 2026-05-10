@@ -2611,16 +2611,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
+name = "r0-cube"
+version = "0.0.0"
+dependencies = [
+ "cubecl",
+ "fs2",
+]
+
+[[package]]
 name = "r0-field"
 version = "0.0.0"
 dependencies = [
  "cubecl",
  "cubecl-core",
- "fs2",
  "p3-baby-bear",
  "p3-field",
  "p3-koala-bear",
  "proptest",
+ "r0-cube",
 ]
 
 [[package]]
@@ -2636,6 +2644,7 @@ dependencies = [
  "p3-field",
  "p3-koala-bear",
  "p3-matrix",
+ "r0-cube",
  "r0-field",
  "wgpu",
 ]
@@ -2651,6 +2660,7 @@ dependencies = [
  "cubecl-wgpu",
  "getrandom 0.3.4",
  "js-sys",
+ "r0-cube",
  "r0-field",
  "r0-ntt",
  "serde_json",

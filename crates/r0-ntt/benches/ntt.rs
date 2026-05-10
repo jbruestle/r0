@@ -3,7 +3,8 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 use cubecl::prelude::*;
 
-use r0_field::{Device, MontyParameters};
+use r0_cube::Device;
+use r0_field::MontyParameters;
 use r0_ntt::NttExec;
 
 #[derive(Clone, Copy)]

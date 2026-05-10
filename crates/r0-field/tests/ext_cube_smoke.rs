@@ -16,10 +16,11 @@ use cubecl::cpu::CpuRuntime;
 use cubecl::prelude::*;
 use cubecl::wgpu::WgpuRuntime;
 
+use r0_cube::Device;
 use r0_field::{
     BabyBear4, BabyBear4Parameters, BabyBear5, BabyBear5Parameters, BabyBearParameters, BaseElem,
-    Device, Ext4, Ext5, ExtField, KoalaBear4, KoalaBear4Parameters, KoalaBearParameters,
-    MontyField, MontyParameters,
+    Ext4, Ext5, ExtField, KoalaBear4, KoalaBear4Parameters, KoalaBearParameters, MontyField,
+    MontyParameters,
 };
 
 // ---------------------------------------------------------------------------

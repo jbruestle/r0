@@ -7,7 +7,8 @@
 #![cfg(feature = "unstable-planner")]
 
 use cubecl::prelude::*;
-use r0_field::{BabyBearParameters, Device};
+use r0_cube::Device;
+use r0_field::BabyBearParameters;
 use r0_ntt::{plan_heuristic, NttExec};
 
 fn dump_runtime<R: Runtime>(label: &str)

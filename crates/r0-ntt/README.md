@@ -223,7 +223,7 @@ impl<P, R> NttExec<P, R> {
 }
 ```
 
-`Device<R>` is `r0-field`'s wrapper around `R::Device` that holds a
+`Device<R>` is [`r0-cube`](../r0-cube)'s wrapper around `R::Device` that holds a
 process-shared exclusive file lock so concurrent test binaries don't
 fight for the same GPU. Acquire one with `Device::<R>::acquire()` per
 scope (typically per `#[test]`); pass `&device` to `NttExec::new`.

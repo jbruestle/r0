@@ -13,9 +13,10 @@
 
 use cubecl::prelude::*;
 use cubecl::wgpu::WgpuRuntime;
+use r0_cube::Device;
 use r0_field::{
-    BabyBear4, BabyBear5, BabyBearParameters, BaseElem, Device, ExtField, KoalaBear4,
-    KoalaBearParameters, MontyField, MontyParameters,
+    BabyBear4, BabyBear5, BabyBearParameters, BaseElem, ExtField, KoalaBear4, KoalaBearParameters,
+    MontyField, MontyParameters,
 };
 use r0_ntt::NttExec;
 

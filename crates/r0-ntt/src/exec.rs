@@ -2,7 +2,8 @@
 
 use cubecl::prelude::*;
 use cubecl::server::Handle;
-use r0_field::{Device, ExtField, MontyParameters};
+use r0_cube::Device;
+use r0_field::{ExtField, MontyParameters};
 
 use crate::fwd_pass::ntt_fwd_pass;
 use crate::inv_pass::ntt_inv_pass;
