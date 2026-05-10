@@ -19,9 +19,11 @@ they still apply.
   Runtime` to pick at launch.
 - A `#[derive(CubeType)]` attribute for user structs that flow through
   kernels.
-- A small standard library: `SharedMemory<T>`, `Array<T>`, the cube
-  intrinsics (`UNIT_POS`, `CUBE_POS_X`, `ABSOLUTE_POS`, `sync_cube()`),
-  warp-level shuffles, and a few fixed-op reductions/scans.
+- A small standard library: `SharedMemory<T>`, `Array<T>`, `Line<P>`
+  (lane-vector `CubePrimitive` for in-register multi-word values), the
+  cube intrinsics (`UNIT_POS`, `CUBE_POS_X`, `ABSOLUTE_POS`,
+  `sync_cube()`), warp-level shuffles, and a few fixed-op
+  reductions/scans.
 - `#[cube] trait` and `#[cube] impl` for trait-generic kernels (we lean
   on this hard for `ExtField` in `r0-field`).
 
@@ -110,6 +112,76 @@ the field trait, which compute the right offsets for transposed layout
 (component `c` of element `i` at offset `c·n + i`). Removes a foot-gun
 and lets one `Array<u32>` carry any extension shape.
 
+### Multi-lane `Line<u32>` for in-register multi-word values
+
+When a kernel needs a multi-`u32` value to flow through plane shuffles
+or shared memory as a single unit (e.g. r0-polynomial's `PairScan`
+monoid stores `2D` extension components as one `Repr`), `Line<u32>` is
+cubecl's native vector. Crucial fact: it's generic only over the
+element type — the lane count is attached to each value at IR
+construction time, not in the Rust type:
+
+```rust
+pub struct Line<P> { /* one P plus an IR-side lane count */ }
+```
+
+Construct with `Line::<u32>::empty(N)` (zero-filled, N comptime) or
+`Line::<u32>::new(scalar)` (size 1). Index with `line[i]` to read/write
+lane `i`. `plane_shuffle_up(line, off)` shuffles all lanes as one unit.
+
+Because lane count travels in the IR rather than the Rust type, two
+spots routinely catch newcomers:
+
+- **Shared memory**: use `SharedMemory::<u32>::new_lined(count, line_size)`
+  — returns `SharedMemory<Line<u32>>` with the right lane count baked
+  in. Plain `SharedMemory::<Line<u32>>::new(count)` allocates with line
+  size 1 and silently breaks.
+- **Array launch args**: `ArrayArg::from_raw_parts::<E>(handle, length,
+  line_size)` — the third arg sets the IR line size for the array. Pass
+  `1` for scalar arrays, the actual lane count for `Line<E>`-typed
+  arrays.
+- **Buffer sizing**: `<Line<u32> as CubePrimitive>::type_size()` returns
+  the **per-lane** size (4 bytes for u32), not the total line bytes.
+  Multiply by the lane count when computing buffer budgets.
+
+`Array<u32>` (the load/store-helper world above) is for buffer I/O;
+`Line<u32>` is for in-register multi-word values. Same kernel mixes
+both freely.
+
+r0-cube's `Monoid` trait carries a `const REPR_LANES` (host-readable
+for `ArrayArg` and byte sizing) and a `fn alloc_scratch(...)` (per-impl,
+knows its own lane count) so the generic scan code never has to reason
+about lane counts directly.
+
+### Free generic `#[cube] fn` for struct construction in trait impls
+
+Two related issues bite when a `#[cube] impl T for ConcreteType` body
+needs to construct a generic `CubeType`:
+
+1. **`Self` isn't usable as a generic argument inside the impl body.**
+   `PairScan::<Self> { … }` errors with E0401 ("can't use `Self` from
+   outer item"). The cubecl macro's expansion turns the impl body into
+   a context where `Self` doesn't resolve as a generic parameter.
+2. **Nested generics in turbofish don't parse.** `PairScan::<Ext4<P>> { … }`
+   is rejected with `expected one of ',' ':' '=' or '>', found '<'` —
+   the parser sees `<Ext4<` and bails.
+
+Workaround that handles both: a free generic `#[cube] fn` constructor
+parametrized by the outer type as a single ident:
+
+```rust
+#[cube]
+pub fn pair<F: ExtField>(p: F, a: F) -> PairScan<F> {
+    PairScan::<F> { p, a }
+}
+```
+
+Inside the impl body, call `pair::<Ext4<BabyBear4Parameters>>(…)`. The
+constructor body itself is generic (no nested turbofish at the literal)
+and the impl body never names `Self` as a generic parameter.
+r0-polynomial's `pair_scan.rs` uses this throughout its
+`PairScanLayout` impls.
+
 ---
 
 ## Quirks we've hit
@@ -123,6 +195,11 @@ and lets one `Array<u32>` carry any extension shape.
 | Cube fn parameters are picky about `usize` vs `u32`. `ABSOLUTE_POS` is `usize` in 0.9. Mixing produces opaque `From<ExpandElementTyped<…>>` errors from the macro. | Pick one and stick to it inside any given kernel. Cast at the boundary. |
 | `cargo test --workspace --features cuda` panics on non-NVIDIA hosts because cubecl-cuda dynamically loads `libcuda`. | `cuda` is **off** by default in `r0-ntt`. CUDA developers run `cargo test --workspace --features r0-ntt/cuda`. |
 | The cubecl macro emits both a free `fn name` and a sibling `mod name` for `#[cube] fn name`. Rustdoc complains about the ambiguous link if you write `[`name`]`. | Use `[`name()`]` for the function in doc links. |
+| `Foo::<Self> { … }` inside a `#[cube] impl T for X` body errors with `Self`-as-generic-param E0401. | Define a free generic `#[cube] fn make_foo<F>(…) -> Foo<F>` and call `make_foo::<X>(…)` from the impl body. |
+| Nested generics in turbofish (`Foo::<Bar<Baz>> { … }`) fail to parse. | Same workaround as above — the helper fn takes the outer type as a single ident at the call site. |
+| `SharedMemory::<Line<u32>>::new(N)` silently allocates with line size 1 (lane count is IR-side, not in the type). | Use `SharedMemory::<u32>::new_lined(N, line_size)`, which returns `SharedMemory<Line<u32>>` with the right lane count. |
+| `<Line<u32> as CubePrimitive>::type_size()` returns 4 (per-lane), not 4·lanes. | Multiply by the lane count for buffer sizing / `ArrayArg` line_size. |
+| `CubeType` struct from another crate has a private field (e.g. `_p: PhantomData<P>`), blocking literal construction across the crate boundary. | Have the owning crate ship a free `#[cube]` constructor (`base_elem_from_raw` etc. in r0-field) — host `from_raw` is `pub const fn` and not callable from cube IR. |
 
 ---
 
@@ -131,9 +208,15 @@ and lets one `Array<u32>` carry any extension shape.
 - **Topology intrinsics**: `UNIT_POS` (thread within block, `usize`),
   `UNIT_POS_PLANE` (lane within warp), `CUBE_POS_X/Y/Z` (block in grid),
   `CUBE_DIM_X/Y/Z` (block size), `ABSOLUTE_POS` (global thread id).
-- **Memory**: `SharedMemory::<T>::new(size)`, `Array<T>` (kernel
-  parameter), `client.create_from_slice`, `client.empty`, `client.read_one`,
-  `Handle::offset_start` (for sub-batch slicing).
+- **Memory**: `SharedMemory::<T>::new(size)`,
+  `SharedMemory::<T>::new_lined(size, line_size)` (returns
+  `SharedMemory<Line<T>>`), `Array<T>` (kernel parameter),
+  `Line<P>` (lane vector — `Line::<P>::empty(N)`, `Line::<P>::new(scalar)`,
+  index with `line[i]`), `client.create_from_slice`, `client.empty`,
+  `client.read_one`, `Handle::offset_start` (sub-batch slicing).
+- **Launch arg sizing**: `ArrayArg::from_raw_parts::<E>(handle,
+  length, line_size)` — third arg is the IR line size of the array
+  (`1` for scalars, lane count for `Line<E>`-typed arrays).
 - **Sync**: `sync_cube()` (workgroup barrier).
 - **Plane (warp) ops** (`crates/.cargo/registry/src/.../cubecl-core-0.9.0/src/frontend/plane.rs`):
   `plane_broadcast`, `plane_shuffle`, `plane_shuffle_xor`,
