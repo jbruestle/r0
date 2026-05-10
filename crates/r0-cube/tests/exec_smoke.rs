@@ -114,6 +114,7 @@ fn run_case<R: Runtime>(
     batch: usize,
     label: &str,
 ) {
+    eprintln!("  case `{label}` (log_n={log_n}, batch={batch})");
     let n = 1usize << log_n;
     let total = batch * n;
 
@@ -156,23 +157,30 @@ fn smoke_sum_recipe_wgpu() {
     assert!(max_threads.is_power_of_two());
     let log_wg = max_threads.trailing_zeros();
 
-    // Construct the executor for the largest log_n we'll exercise (the
-    // L=0 cap is wg_size² — i.e. log_n = 2 * log_wg).
-    let log_n_max = 2 * log_wg;
+    // Construct the executor for two levels past the L=0 boundary so
+    // L=1 paths actually get exercised on devices with large workgroup
+    // sizes (Mac wgpu reports log_wg=10 → L=0 covers up through 2^20).
+    let log_n_max = 2 * log_wg + 2;
     let max_batch = 4;
     let exec = ScanExec::<WgpuRuntime, SumU32Recipe>::new(&device, log_n_max, max_batch);
 
-    // Single-block: n == wg_size, exercises the fast path with no spine.
+    // L=0 single-block: n == wg_size, exercises the fast path.
     run_case(&exec, log_wg, 2, "single-block, n=wg_size");
 
-    // Tiny single-block (n < wg_size): kernel uses log_n as wg-size exponent.
+    // L=0 tiny single-block (n < wg_size): kernel uses log_n as wg-size exponent.
     if log_wg >= 4 {
         run_case(&exec, 4, 3, "single-block, n=16");
     }
 
-    // Multi-block (n = 4 * wg_size, num_blocks = 4).
-    run_case(&exec, log_wg + 2, 2, "multi-block, n=4*wg_size");
+    // L=0 multi-block, modest size.
+    run_case(&exec, log_wg + 2, 2, "L=0 multi-block, n=4*wg_size");
 
-    // Largest multi-block we can do at L=0 (n = wg_size², num_blocks = wg_size).
-    run_case(&exec, 2 * log_wg, 2, "multi-block, n=wg_size^2");
+    // L=0 multi-block, max size at this depth (n = wg_size²).
+    run_case(&exec, 2 * log_wg, 2, "L=0 multi-block, n=wg_size^2");
+
+    // L=1 multi-block, just over the L=0 boundary (num_blocks at level 1 = 2).
+    run_case(&exec, 2 * log_wg + 1, 2, "L=1 multi-block, n=2*wg_size^2");
+
+    // L=1 multi-block, num_blocks at level 1 = 4.
+    run_case(&exec, 2 * log_wg + 2, 2, "L=1 multi-block, n=4*wg_size^2");
 }

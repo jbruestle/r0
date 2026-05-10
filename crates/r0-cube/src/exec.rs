@@ -1,24 +1,52 @@
 //! `ScanExec`: device-resident driver for [`ScanRecipe`]-based scans.
 //!
-//! Runs the standard map → scan → unmap pipeline against a recipe. Two
-//! cases:
+//! Runs the standard map → scan → unmap pipeline against a recipe, with
+//! a recursive spine to support transforms larger than the device's
+//! `wg_size²` single-spine cap.
 //!
-//! - **Single block** (`n <= wg_size`): one workgroup per polynomial.
-//!   `Recipe::load` → [`block_inclusive_scan`] → `Recipe::store`.
+//! # Pipeline
 //!
-//! - **Multi-block** (`n > wg_size`, `n <= wg_size²`): three kernels.
-//!   1. `k0_reduce` — each block reduces, lane 0 writes its block total
-//!      to the spine.
-//!   2. `spine_scan` — one workgroup per polynomial scans the
-//!      per-block totals (constraint: `num_blocks <= wg_size`, i.e.
-//!      `n <= wg_size²`).
-//!   3. `k0_apply` — each block re-loads, re-scans, combines its spine
-//!      carry, projects, stores.
+//! For `n <= wg_size`: a single `k_single_block` kernel does the whole
+//! scan in one workgroup per polynomial.
 //!
-//! Recursive spine for `n > wg_size²` is the next milestone; not
-//! implemented yet. With wgpu's typical 256-thread cap that's
-//! `n <= 65536`; with CUDA's 1024-thread cap it's `n <= 1M` (the
-//! polynomial-division headline target).
+//! For `n > wg_size`: choose `L = ceil(log_n / log_wg) - 2` spine
+//! recursion levels (`L = 0` if `wg_size < n <= wg_size²`, `L = 1` if
+//! `wg_size² < n <= wg_size³`, etc.) and dispatch `2(L+1) + 1` kernels:
+//!
+//! 1. `k0_reduce<Recipe>` — recipe-aware. Each block reduces, lane 0
+//!    writes its total to `spine[0][block]`.
+//! 2. `k_reduce_spine<M>` × L — each upper-spine cell is the reduction
+//!    of `wg_size` lower-spine cells.
+//! 3. `spine_top_scan<M>` — one workgroup per polynomial does the
+//!    top-level inclusive scan in place.
+//! 4. `k_apply_spine<M>` × L (in reverse) — each group re-scans
+//!    `wg_size` lower-spine cells, combines with the upper-spine carry,
+//!    writes back. After this stage `spine[0][k]` holds the inclusive
+//!    prefix of the original input through block `k`.
+//! 5. `k0_apply<Recipe>` — recipe-aware. Re-loads input, re-scans
+//!    within block, combines with `spine[0][block-1]` as carry, projects
+//!    via `Recipe::store`.
+//!
+//! Recipe-aware kernels are monomorphized per `Recipe`; spine kernels
+//! are monomorphized per `Recipe::Monoid` (and shared across all spine
+//! levels — only the comptime sizes differ at launch time).
+//!
+//! # Spine layout
+//!
+//! Each spine level slices into `device.scratch()` at a fixed byte
+//! offset computed at construction time, sized for
+//! `max_batch * max_num_blocks_at_level * sizeof(M::Repr)`. Smaller
+//! per-call `(log_n, batch)` use only the leftmost portion of each
+//! slice — addressing is `spine[batch * num_blocks_l + block_id]`,
+//! always within the construction-time bound.
+//!
+//! # Limits and constraints
+//!
+//! - `wg_size` must be a power of two. Workgroup size is fixed at the
+//!   device's `max_units_per_cube` (largest the device allows).
+//! - `log_n_max` is bounded only by scratch budget and grid-dim limits;
+//!   a future revision will sub-batch when `num_blocks_0` exceeds the
+//!   device's `max_cube_count.0`.
 
 use core::marker::PhantomData;
 
@@ -32,16 +60,32 @@ use crate::scan::{block_inclusive_reduce, block_inclusive_scan, combine_via};
 
 const U32_BYTES: u64 = 4;
 
+/// Spine recursion depth needed to scan a polynomial of size `2^log_n`
+/// on a device with workgroup-size exponent `log_wg`. `0` means a
+/// single-pass spine (level-0 only); `k` means `k` recursive reductions
+/// before the top-level scan fits in one workgroup.
+fn spine_levels_needed(log_n: u32, log_wg: u32) -> u32 {
+    log_n.div_ceil(log_wg).saturating_sub(2)
+}
+
+/// Number of blocks at spine level `level`: `n / wg_size^(level+1)`,
+/// floored at 1.
+fn num_blocks_at_level(log_n: u32, log_wg: u32, level: u32) -> u32 {
+    let log = log_n.saturating_sub(log_wg * (level + 1));
+    if log == 0 {
+        1
+    } else {
+        1u32 << log
+    }
+}
+
 /// Device-resident scan executor for one recipe.
-///
-/// Construct one per `(device, recipe, log_n_max, max_batch)` and reuse
-/// it. The spine buffer slices into `device.scratch()` — no per-executor
-/// allocation. Pre-bakes `log_warp` and `log_wg` from the device's
-/// hardware properties so each `run` call only needs to compute the
-/// per-call `num_blocks` and dispatch.
 pub struct ScanExec<R: Runtime, Recipe: ScanRecipe> {
     client: ComputeClient<R>,
-    spine: Handle,
+    /// Per-level spine slices into `device.scratch()`. `spines[k]` holds
+    /// up to `max_batch * num_blocks_at_level(log_n_max, log_wg, k)`
+    /// `Repr` values.
+    spines: Vec<Handle>,
     log_warp: u32,
     log_wg: u32,
     num_warps: u32,
@@ -54,12 +98,9 @@ impl<R: Runtime, Recipe: ScanRecipe> ScanExec<R, Recipe> {
     /// Construct an executor for `(device, Recipe)`, capable of scans
     /// with `log_n` up to `log_n_max` and batches up to `max_batch`.
     ///
-    /// Constraints (panics if violated):
-    /// - `log_n_max <= 2 * log2(max_threads_per_wg)` — required for the
-    ///   spine to fit one workgroup at the worst case.
-    /// - `device.scratch_bytes() >= max_batch * num_blocks_max *
-    ///   sizeof::<M::Repr>()` — spine has to fit in the device's shared
-    ///   scratch buffer.
+    /// Pre-slices the device's shared scratch into per-spine-level
+    /// sub-handles. Panics if the scratch is too small for the worst-case
+    /// (`log_n_max`, `max_batch`) spine bytes.
     pub fn new(device: &Device<R>, log_n_max: u32, max_batch: usize) -> Self {
         assert!(log_n_max >= 1, "log_n_max must be >= 1");
 
@@ -77,30 +118,28 @@ impl<R: Runtime, Recipe: ScanRecipe> ScanExec<R, Recipe> {
             "expected a power-of-two max_units_per_cube, got {max_threads}"
         );
         let log_wg = max_threads.trailing_zeros();
-        assert!(
-            log_n_max <= 2 * log_wg,
-            "log_n_max={log_n_max} requires log_wg >= {} but device offers log_wg <= {log_wg}",
-            log_n_max.div_ceil(2)
-        );
 
         let num_warps = 1u32 << (log_wg - log_warp);
-        let max_n = 1usize << log_n_max;
-        let wg_size = 1usize << log_wg;
-        let max_num_blocks = max_n.div_ceil(wg_size).max(1);
-        let max_spine_elems = max_batch * max_num_blocks;
-        let repr_bytes =
-            <<Recipe::Monoid as Monoid>::Repr as CubePrimitive>::type_size();
-        let spine_bytes = (max_spine_elems * repr_bytes) as u64;
+        let max_levels = spine_levels_needed(log_n_max, log_wg);
+
+        let repr_bytes = <<Recipe::Monoid as Monoid>::Repr as CubePrimitive>::type_size() as u64;
+        let mut spines = Vec::with_capacity(max_levels as usize + 1);
+        let mut byte_offset = 0u64;
+        for level in 0..=max_levels {
+            let nb = num_blocks_at_level(log_n_max, log_wg, level);
+            let level_bytes = max_batch as u64 * nb as u64 * repr_bytes;
+            spines.push(device.scratch().clone().offset_start(byte_offset));
+            byte_offset += level_bytes;
+        }
         assert!(
-            device.scratch_bytes() as u64 >= spine_bytes,
-            "ScanExec spine needs {spine_bytes} bytes; device scratch is {} bytes",
+            byte_offset <= device.scratch_bytes() as u64,
+            "ScanExec spine needs {byte_offset} bytes; device scratch is {} bytes",
             device.scratch_bytes()
         );
-        let spine = device.scratch().clone();
 
         Self {
             client,
-            spine,
+            spines,
             log_warp,
             log_wg,
             num_warps,
@@ -118,13 +157,13 @@ impl<R: Runtime, Recipe: ScanRecipe> ScanExec<R, Recipe> {
 
     /// Run the scan over `batch` polynomials of length `2^log_n`.
     ///
-    /// Buffer expectations (caller's responsibility — recipes own
-    /// layout, so this driver only sizes element counts via byte length):
-    /// - `input`, `output`: each holds `batch * 2^log_n * R::WORDS` u32s
-    ///   in whatever layout the recipe expects.
-    /// - `contexts`: holds whatever per-batch-row data the recipe reads
-    ///   (e.g. `batch * F::DEGREE` u32s for `DivByXMinusZ<F>`); pass a
-    ///   minimal dummy buffer for context-free recipes.
+    /// Buffer expectations (recipe-owned layout, this driver only sizes
+    /// element counts via byte length):
+    /// - `input`, `output`: each holds the recipe's u32 layout for
+    ///   `batch × 2^log_n` logical elements.
+    /// - `contexts`: per-batch-row data the recipe reads (e.g.
+    ///   `batch × F::DEGREE` u32s for `DivByXMinusZ<F>`); pass a 1-u32
+    ///   dummy buffer for context-free recipes.
     ///
     /// `output` may alias `input` (in-place).
     pub fn run(
@@ -152,16 +191,38 @@ impl<R: Runtime, Recipe: ScanRecipe> ScanExec<R, Recipe> {
 
         if n <= wg_size {
             self.launch_single_block(contexts, input, output, log_n, batch_count);
-        } else {
-            let num_blocks = n / wg_size;
-            assert!(
-                num_blocks <= wg_size,
-                "num_blocks={num_blocks} > wg_size={wg_size}; recursive spine not yet implemented"
-            );
-            self.launch_k0_reduce(contexts, input, log_n, batch_count, num_blocks);
-            self.launch_spine_scan(batch_count, num_blocks);
-            self.launch_k0_apply(contexts, input, output, log_n, batch_count, num_blocks);
+            return;
         }
+
+        let levels = spine_levels_needed(log_n, self.log_wg);
+        debug_assert!(levels <= self.spines.len() as u32 - 1);
+
+        // Phase 1: reduce up.
+        let nb_0 = num_blocks_at_level(log_n, self.log_wg, 0);
+        self.launch_k0_reduce(contexts, input, log_n, batch_count, nb_0);
+        for level in 1..=levels {
+            let nb_lower = num_blocks_at_level(log_n, self.log_wg, level - 1);
+            let nb_upper = num_blocks_at_level(log_n, self.log_wg, level);
+            self.launch_k_reduce_spine(level, batch_count, nb_lower, nb_upper);
+        }
+
+        // Phase 2: top-level scan.
+        let nb_top = num_blocks_at_level(log_n, self.log_wg, levels);
+        self.launch_spine_top_scan(levels, batch_count, nb_top);
+
+        // Phase 3: apply down.
+        for level in (1..=levels).rev() {
+            let nb_lower = num_blocks_at_level(log_n, self.log_wg, level - 1);
+            let nb_upper = num_blocks_at_level(log_n, self.log_wg, level);
+            self.launch_k_apply_spine(level, batch_count, nb_lower, nb_upper);
+        }
+        self.launch_k0_apply(contexts, input, output, log_n, batch_count, nb_0);
+    }
+
+    fn spine_elem_count(&self, level: u32) -> usize {
+        let repr_bytes =
+            <<Recipe::Monoid as Monoid>::Repr as CubePrimitive>::type_size();
+        (self.spines[level as usize].size() / repr_bytes as u64) as usize
     }
 
     fn launch_single_block(
@@ -173,17 +234,13 @@ impl<R: Runtime, Recipe: ScanRecipe> ScanExec<R, Recipe> {
         batch_count: u32,
     ) {
         let n = 1u32 << log_n;
-        let wg_size = 1u32 << self.log_wg;
-        // For n < wg_size we'd waste threads — kernel uses log_n as the
-        // workgroup-size exponent in that case so threads == n.
         let kernel_log_wg = log_n.min(self.log_wg);
         let kernel_wg_size = 1u32 << kernel_log_wg;
-        let _ = wg_size; // (informational, may differ from kernel_wg_size for small n)
+        let num_warps = 1u32 << (kernel_log_wg.saturating_sub(self.log_warp));
 
         let in_count = (input.size() / U32_BYTES) as usize;
         let out_count = (output.size() / U32_BYTES) as usize;
         let ctx_count = (contexts.size() / U32_BYTES) as usize;
-        let num_warps = 1u32 << (kernel_log_wg.saturating_sub(self.log_warp));
 
         unsafe {
             k_single_block::launch_unchecked::<Recipe, R>(
@@ -193,7 +250,6 @@ impl<R: Runtime, Recipe: ScanRecipe> ScanExec<R, Recipe> {
                 ArrayArg::from_raw_parts::<u32>(contexts, ctx_count, 1),
                 ArrayArg::from_raw_parts::<u32>(input, in_count, 1),
                 ArrayArg::from_raw_parts::<u32>(output, out_count, 1),
-                log_n,
                 self.log_warp,
                 kernel_log_wg,
                 num_warps,
@@ -210,30 +266,29 @@ impl<R: Runtime, Recipe: ScanRecipe> ScanExec<R, Recipe> {
         input: &Handle,
         log_n: u32,
         batch_count: u32,
-        num_blocks: u32,
+        nb_0: u32,
     ) {
         let in_count = (input.size() / U32_BYTES) as usize;
         let ctx_count = (contexts.size() / U32_BYTES) as usize;
-        let spine_elems = self.spine_elem_count();
+        let spine_elems = self.spine_elem_count(0);
         let n = 1u32 << log_n;
 
         unsafe {
             k0_reduce::launch_unchecked::<Recipe, R>(
                 &self.client,
-                CubeCount::Static(num_blocks, batch_count, 1),
+                CubeCount::Static(nb_0, batch_count, 1),
                 CubeDim::new_1d(1u32 << self.log_wg),
                 ArrayArg::from_raw_parts::<u32>(contexts, ctx_count, 1),
                 ArrayArg::from_raw_parts::<u32>(input, in_count, 1),
                 ArrayArg::from_raw_parts::<<Recipe::Monoid as Monoid>::Repr>(
-                    &self.spine,
+                    &self.spines[0],
                     spine_elems,
                     1,
                 ),
-                log_n,
                 self.log_warp,
                 self.log_wg,
                 self.num_warps,
-                num_blocks,
+                nb_0,
                 batch_count,
                 n,
             )
@@ -241,24 +296,100 @@ impl<R: Runtime, Recipe: ScanRecipe> ScanExec<R, Recipe> {
         }
     }
 
-    fn launch_spine_scan(&self, batch_count: u32, num_blocks: u32) {
-        let spine_elems = self.spine_elem_count();
+    fn launch_k_reduce_spine(
+        &self,
+        level: u32,
+        batch_count: u32,
+        nb_lower: u32,
+        nb_upper: u32,
+    ) {
+        let spine_lower = &self.spines[(level - 1) as usize];
+        let spine_upper = &self.spines[level as usize];
+        let lower_count = self.spine_elem_count(level - 1);
+        let upper_count = self.spine_elem_count(level);
+
         unsafe {
-            spine_scan::launch_unchecked::<Recipe::Monoid, R>(
+            k_reduce_spine::launch_unchecked::<Recipe::Monoid, R>(
                 &self.client,
-                CubeCount::Static(1, batch_count, 1),
+                CubeCount::Static(nb_upper, batch_count, 1),
                 CubeDim::new_1d(1u32 << self.log_wg),
                 ArrayArg::from_raw_parts::<<Recipe::Monoid as Monoid>::Repr>(
-                    &self.spine,
-                    spine_elems,
+                    spine_lower,
+                    lower_count,
+                    1,
+                ),
+                ArrayArg::from_raw_parts::<<Recipe::Monoid as Monoid>::Repr>(
+                    spine_upper,
+                    upper_count,
                     1,
                 ),
                 self.log_warp,
                 self.log_wg,
                 self.num_warps,
-                num_blocks,
+                nb_lower,
+                nb_upper,
             )
-            .expect("spine_scan launch failed");
+            .expect("k_reduce_spine launch failed");
+        }
+    }
+
+    fn launch_spine_top_scan(&self, level: u32, batch_count: u32, nb_top: u32) {
+        let spine_top = &self.spines[level as usize];
+        let count = self.spine_elem_count(level);
+
+        unsafe {
+            spine_top_scan::launch_unchecked::<Recipe::Monoid, R>(
+                &self.client,
+                CubeCount::Static(1, batch_count, 1),
+                CubeDim::new_1d(1u32 << self.log_wg),
+                ArrayArg::from_raw_parts::<<Recipe::Monoid as Monoid>::Repr>(
+                    spine_top, count, 1,
+                ),
+                self.log_warp,
+                self.log_wg,
+                self.num_warps,
+                nb_top,
+            )
+            .expect("spine_top_scan launch failed");
+        }
+    }
+
+    fn launch_k_apply_spine(
+        &self,
+        level: u32,
+        batch_count: u32,
+        nb_lower: u32,
+        nb_upper: u32,
+    ) {
+        let spine_lower = &self.spines[(level - 1) as usize];
+        let spine_upper = &self.spines[level as usize];
+        let lower_count = self.spine_elem_count(level - 1);
+        let upper_count = self.spine_elem_count(level);
+
+        // One workgroup per upper-level slot (each carries `wg_size`
+        // lower-level slots).
+        unsafe {
+            k_apply_spine::launch_unchecked::<Recipe::Monoid, R>(
+                &self.client,
+                CubeCount::Static(nb_upper, batch_count, 1),
+                CubeDim::new_1d(1u32 << self.log_wg),
+                ArrayArg::from_raw_parts::<<Recipe::Monoid as Monoid>::Repr>(
+                    spine_lower,
+                    lower_count,
+                    1,
+                ),
+                ArrayArg::from_raw_parts::<<Recipe::Monoid as Monoid>::Repr>(
+                    spine_upper,
+                    upper_count,
+                    1,
+                ),
+                self.log_warp,
+                self.log_wg,
+                self.num_warps,
+                nb_lower,
+                nb_upper,
+            )
+            .expect("k_apply_spine launch failed");
         }
     }
 
@@ -269,63 +400,54 @@ impl<R: Runtime, Recipe: ScanRecipe> ScanExec<R, Recipe> {
         output: &Handle,
         log_n: u32,
         batch_count: u32,
-        num_blocks: u32,
+        nb_0: u32,
     ) {
         let in_count = (input.size() / U32_BYTES) as usize;
         let out_count = (output.size() / U32_BYTES) as usize;
         let ctx_count = (contexts.size() / U32_BYTES) as usize;
-        let spine_elems = self.spine_elem_count();
+        let spine_elems = self.spine_elem_count(0);
         let n = 1u32 << log_n;
 
         unsafe {
             k0_apply::launch_unchecked::<Recipe, R>(
                 &self.client,
-                CubeCount::Static(num_blocks, batch_count, 1),
+                CubeCount::Static(nb_0, batch_count, 1),
                 CubeDim::new_1d(1u32 << self.log_wg),
                 ArrayArg::from_raw_parts::<u32>(contexts, ctx_count, 1),
                 ArrayArg::from_raw_parts::<u32>(input, in_count, 1),
                 ArrayArg::from_raw_parts::<<Recipe::Monoid as Monoid>::Repr>(
-                    &self.spine,
+                    &self.spines[0],
                     spine_elems,
                     1,
                 ),
                 ArrayArg::from_raw_parts::<u32>(output, out_count, 1),
-                log_n,
                 self.log_warp,
                 self.log_wg,
                 self.num_warps,
-                num_blocks,
+                nb_0,
                 batch_count,
                 n,
             )
             .expect("k0_apply launch failed");
         }
     }
-
-    fn spine_elem_count(&self) -> usize {
-        let repr_bytes =
-            <<Recipe::Monoid as Monoid>::Repr as CubePrimitive>::type_size();
-        (self.spine.size() / repr_bytes as u64) as usize
-    }
 }
 
 // -- Kernels ------------------------------------------------------------
 
-/// Single-block fast path: `n == wg_size`. One workgroup per polynomial
+/// Single-block fast path: `n <= wg_size`. One workgroup per polynomial
 /// does the whole scan with no spine.
 #[cube(launch_unchecked)]
 fn k_single_block<Recipe: ScanRecipe>(
     contexts: &Array<u32>,
     input: &Array<u32>,
     output: &mut Array<u32>,
-    #[comptime] log_n: u32,
     #[comptime] log_warp: u32,
     #[comptime] log_wg: u32,
     #[comptime] num_warps: u32,
     #[comptime] batch_count: u32,
     #[comptime] n: u32,
 ) {
-    let _ = log_n;
     let batch = CUBE_POS_Y;
     let scan_pos = UNIT_POS;
 
@@ -334,19 +456,17 @@ fn k_single_block<Recipe: ScanRecipe>(
     ));
 
     let v = Recipe::load(contexts, input, batch, scan_pos, n, batch_count);
-    let scanned =
-        block_inclusive_scan::<Recipe::Monoid>(v, &mut scratch, log_warp, log_wg);
+    let scanned = block_inclusive_scan::<Recipe::Monoid>(v, &mut scratch, log_warp, log_wg);
     Recipe::store(contexts, output, batch, scan_pos, n, batch_count, scanned);
 }
 
-/// Multi-block stage 1: each block reduces, lane 0 writes its block
-/// total to `spine[batch * num_blocks + block_id]`.
+/// Multi-block stage 1 (recipe-aware): each level-0 block reduces, lane
+/// 0 writes its block total to `spine[batch * num_blocks + block_id]`.
 #[cube(launch_unchecked)]
 fn k0_reduce<Recipe: ScanRecipe>(
     contexts: &Array<u32>,
     input: &Array<u32>,
     spine: &mut Array<<Recipe::Monoid as Monoid>::Repr>,
-    #[comptime] log_n: u32,
     #[comptime] log_warp: u32,
     #[comptime] log_wg: u32,
     #[comptime] num_warps: u32,
@@ -354,7 +474,6 @@ fn k0_reduce<Recipe: ScanRecipe>(
     #[comptime] batch_count: u32,
     #[comptime] n: u32,
 ) {
-    let _ = log_n;
     let batch = CUBE_POS_Y;
     let block_id = CUBE_POS_X;
     let tid = UNIT_POS;
@@ -365,8 +484,7 @@ fn k0_reduce<Recipe: ScanRecipe>(
     ));
 
     let v = Recipe::load(contexts, input, batch, scan_pos, n, batch_count);
-    let total =
-        block_inclusive_reduce::<Recipe::Monoid>(v, &mut scratch, log_warp, log_wg);
+    let total = block_inclusive_reduce::<Recipe::Monoid>(v, &mut scratch, log_warp, log_wg);
 
     if tid == 0u32 {
         spine[(batch * num_blocks + block_id) as usize] =
@@ -374,10 +492,49 @@ fn k0_reduce<Recipe: ScanRecipe>(
     }
 }
 
-/// Multi-block stage 2: per batch row, scan the per-block totals.
-/// Generic over the monoid (no recipe dependency at this stage).
+/// Spine reduce: each upper-level cell becomes the reduction of
+/// `wg_size` consecutive lower-level cells.
 #[cube(launch_unchecked)]
-fn spine_scan<M: Monoid>(
+fn k_reduce_spine<M: Monoid>(
+    spine_lower: &Array<M::Repr>,
+    spine_upper: &mut Array<M::Repr>,
+    #[comptime] log_warp: u32,
+    #[comptime] log_wg: u32,
+    #[comptime] num_warps: u32,
+    #[comptime] nb_lower: u32,
+    #[comptime] nb_upper: u32,
+) {
+    let batch = CUBE_POS_Y;
+    let block_upper = CUBE_POS_X;
+    let tid = UNIT_POS;
+    let pos_lower = block_upper * comptime!(1u32 << log_wg) + tid;
+
+    let mut scratch =
+        SharedMemory::<M::Repr>::new(comptime!(num_warps as usize));
+
+    let safe_idx = if pos_lower < nb_lower {
+        pos_lower
+    } else {
+        0u32.into()
+    };
+    let loaded_repr = spine_lower[(batch * nb_lower + safe_idx) as usize];
+    let v_repr = if pos_lower < nb_lower {
+        loaded_repr
+    } else {
+        M::to_repr(M::identity())
+    };
+
+    let total = block_inclusive_reduce::<M>(M::from_repr(v_repr), &mut scratch, log_warp, log_wg);
+
+    if tid == 0u32 {
+        spine_upper[(batch * nb_upper + block_upper) as usize] = M::to_repr(total);
+    }
+}
+
+/// Top-level spine scan: in-place inclusive scan within one workgroup
+/// per batch row. Constraint at the call site: `num_blocks <= wg_size`.
+#[cube(launch_unchecked)]
+fn spine_top_scan<M: Monoid>(
     spine: &mut Array<M::Repr>,
     #[comptime] log_warp: u32,
     #[comptime] log_wg: u32,
@@ -386,7 +543,6 @@ fn spine_scan<M: Monoid>(
 ) {
     let batch = CUBE_POS_Y;
     let tid = UNIT_POS;
-
     let mut scratch =
         SharedMemory::<M::Repr>::new(comptime!(num_warps as usize));
 
@@ -408,15 +564,69 @@ fn spine_scan<M: Monoid>(
     }
 }
 
-/// Multi-block stage 3: per block, re-load and re-scan, combine the
-/// spine carry, project to output via `Recipe::store`.
+/// Spine apply: re-scans `wg_size` lower-level cells, combines with the
+/// upper-level carry, writes back. After this the lower spine holds the
+/// inclusive prefix through each lower-level cell.
+#[cube(launch_unchecked)]
+fn k_apply_spine<M: Monoid>(
+    spine_lower: &mut Array<M::Repr>,
+    spine_upper: &Array<M::Repr>,
+    #[comptime] log_warp: u32,
+    #[comptime] log_wg: u32,
+    #[comptime] num_warps: u32,
+    #[comptime] nb_lower: u32,
+    #[comptime] nb_upper: u32,
+) {
+    let batch = CUBE_POS_Y;
+    let group = CUBE_POS_X; // one workgroup per upper-level slot
+    let tid = UNIT_POS;
+    let pos_lower = group * comptime!(1u32 << log_wg) + tid;
+
+    let mut scratch =
+        SharedMemory::<M::Repr>::new(comptime!(num_warps as usize));
+
+    let safe_idx = if pos_lower < nb_lower {
+        pos_lower
+    } else {
+        0u32.into()
+    };
+    let loaded_repr = spine_lower[(batch * nb_lower + safe_idx) as usize];
+    let v_repr = if pos_lower < nb_lower {
+        loaded_repr
+    } else {
+        M::to_repr(M::identity())
+    };
+
+    let scanned =
+        block_inclusive_scan::<M>(M::from_repr(v_repr), &mut scratch, log_warp, log_wg);
+    let scanned_repr = M::to_repr(scanned);
+
+    let carry_idx = if group > 0 {
+        group - 1
+    } else {
+        0u32.into()
+    };
+    let carry_repr = spine_upper[(batch * nb_upper + carry_idx) as usize];
+    let final_repr = if group > 0 {
+        combine_via::<M>(carry_repr, scanned_repr)
+    } else {
+        scanned_repr
+    };
+
+    if pos_lower < nb_lower {
+        spine_lower[(batch * nb_lower + pos_lower) as usize] = final_repr;
+    }
+}
+
+/// Multi-block stage 5 (recipe-aware): each level-0 block re-loads
+/// input via `Recipe::load`, re-scans, combines with the spine carry,
+/// projects via `Recipe::store`.
 #[cube(launch_unchecked)]
 fn k0_apply<Recipe: ScanRecipe>(
     contexts: &Array<u32>,
     input: &Array<u32>,
     spine: &Array<<Recipe::Monoid as Monoid>::Repr>,
     output: &mut Array<u32>,
-    #[comptime] log_n: u32,
     #[comptime] log_warp: u32,
     #[comptime] log_wg: u32,
     #[comptime] num_warps: u32,
@@ -424,7 +634,6 @@ fn k0_apply<Recipe: ScanRecipe>(
     #[comptime] batch_count: u32,
     #[comptime] n: u32,
 ) {
-    let _ = log_n;
     let batch = CUBE_POS_Y;
     let block_id = CUBE_POS_X;
     let tid = UNIT_POS;
@@ -435,8 +644,7 @@ fn k0_apply<Recipe: ScanRecipe>(
     ));
 
     let v = Recipe::load(contexts, input, batch, scan_pos, n, batch_count);
-    let scanned =
-        block_inclusive_scan::<Recipe::Monoid>(v, &mut scratch, log_warp, log_wg);
+    let scanned = block_inclusive_scan::<Recipe::Monoid>(v, &mut scratch, log_warp, log_wg);
     let scanned_repr = <Recipe::Monoid as Monoid>::to_repr(scanned);
 
     let carry_idx = if block_id > 0 {
