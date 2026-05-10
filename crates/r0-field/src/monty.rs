@@ -19,6 +19,11 @@
 //!   [`mul_hi_u32`]'s host body, never inside `#[cube]` IR.
 //! - `[profile.dev] overflow-checks = false` is set workspace-wide so
 //!   plain `*`/`+`/`-` wrap consistently between host Rust and cube IR.
+//!
+//! The crate README's "cubecl 0.9 quirks worth knowing" section
+//! catalogues a few more (broken `%` codegen on Metal, `PhantomData` +
+//! `CubeType` derive, trait-const-default visibility through generics)
+//! that bit during the extension-field work.
 
 use core::marker::PhantomData;
 use cubecl::prelude::*;

@@ -7,8 +7,12 @@ CUDA, wgpu (Vulkan/Metal/WebGPU), and CPU.
 ## Crates
 
 - [`r0-field`](crates/r0-field) — 31-bit Montgomery prime fields
-  (BabyBear, KoalaBear). Single-source `#[cube]` arithmetic shared by
-  host and kernel code.
+  (BabyBear, KoalaBear) plus their degree-4/5 binomial extensions
+  (BB^4, KB^4, BB^5), the `ExtField` `#[cube]` trait that lets later
+  kernels stay generic over the inner field, and `Device<R>` (the
+  per-runtime cross-process lock used to serialize GPU tests under
+  cargo's per-binary parallelism). See [the crate README](crates/r0-field/README.md)
+  for design.
 - [`r0-ntt`](crates/r0-ntt) — batched forward/inverse NTT over those
   fields. See [the crate README](crates/r0-ntt/README.md) for design
   and performance.

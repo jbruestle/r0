@@ -192,12 +192,26 @@ can come from the heuristic, the autotuner, or a saved file.
 pub struct NttExec<P: MontyParameters, R: Runtime> { /* client, twiddles, scratch */ }
 
 impl<P, R> NttExec<P, R> {
-    pub fn new(device: &R::Device, scratch_bytes: usize) -> Self;
+    pub fn new(device: &Device<R>, scratch_bytes: usize) -> Self;
     pub fn client(&self) -> &ComputeClient<R>;
 
     // Heuristic-planned: the stable surface.
     pub fn forward(&self, buf: &Handle, log_n: u32, batch: usize);
     pub fn inverse(&self, buf: &Handle, log_n: u32, batch: usize);
+
+    // Extension-field convenience. F = BabyBear4, BabyBear5, KoalaBear4,
+    // or BaseElem<P> — anything implementing ExtField<Base = P>. The
+    // body is `forward(buf, log_n, batch * F::DEGREE)` because a
+    // transposed-layout extension polynomial is bitwise identical to D
+    // consecutive base-field polynomials at consecutive batch rows
+    // (see §7); the type bound is what stops you feeding a BabyBear4
+    // element to a KoalaBear executor.
+    pub fn forward_ext<F: ExtField<Base = P>>(
+        &self, buf: &Handle, log_n: u32, batch: usize,
+    );
+    pub fn inverse_ext<F: ExtField<Base = P>>(
+        &self, buf: &Handle, log_n: u32, batch: usize,
+    );
 }
 
 // Gated behind `unstable-planner`.
@@ -208,6 +222,11 @@ impl<P, R> NttExec<P, R> {
     pub fn inverse_with_plan(&self, buf: &Handle, plan: &NttPlan, batch: usize);
 }
 ```
+
+`Device<R>` is `r0-field`'s wrapper around `R::Device` that holds a
+process-shared exclusive file lock so concurrent test binaries don't
+fight for the same GPU. Acquire one with `Device::<R>::acquire()` per
+scope (typically per `#[test]`); pass `&device` to `NttExec::new`.
 
 `NttExec::new` queries `DeviceLimits` (shared memory, max threads)
 from cubecl at construction time and uses them via the heuristic
@@ -275,7 +294,16 @@ memory. When `batch > sub_batch`, the user buffer is sliced via
 `Handle::offset_start` so each iteration reads and writes the correct
 batch rows.
 
-## 8. Performance
+### 7.1 NTT over an extension is batched NTT over the base
+
+A degree-`D` extension polynomial of length `N` (e.g. `BabyBear4` of
+length `2^20`) is laid out **transposed**: component `c` of element `i`
+sits at u32 offset `c·N + i` (see [`r0_field::ExtField`]). That layout
+is bitwise identical to `D` independent base-field polynomials of
+length `N` placed at consecutive NTT batch rows. So
+`NttExec::forward(buf, log_n, batch * D)` is the BB^4 NTT — no new
+kernel, no new twiddle tables, no permutation pass. `forward_ext::<F>`
+is the typed sugar for it.
 
 BabyBear, `log_n = 20` (1M points), batch = 32:
 

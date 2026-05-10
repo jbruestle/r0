@@ -44,8 +44,8 @@ pub trait BinomialExt4Parameters: 'static + Copy + Clone + Default + Send + Sync
 /// Limbs are in Montgomery form (`x · 2^32 mod p`, reduced to `[0, p)`).
 /// On host, treat as a value type with the usual operator overloads. In
 /// `#[cube]` bodies this is the `CubeType` flowing through; the
-/// arithmetic is also exposed as the free [`ext4_add`], [`ext4_sub`],
-/// [`ext4_mul`], [`ext4_neg`] functions for code that prefers them.
+/// arithmetic is also exposed as the free [`ext4_add()`], [`ext4_sub()`],
+/// [`ext4_mul()`], [`ext4_neg()`] functions for code that prefers them.
 #[derive(CubeType, Copy, Clone, Debug, Default, Eq, Hash, PartialEq)]
 pub struct Ext4<P: BinomialExt4Parameters> {
     /// Coefficient of `X^0`.
