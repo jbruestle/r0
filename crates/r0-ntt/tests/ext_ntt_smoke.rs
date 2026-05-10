@@ -42,7 +42,7 @@ where
     let total = batch * n * F::DEGREE as usize;
 
     let device = Device::<R>::acquire();
-    let exec = NttExec::<P, R>::new(&device, 0);
+    let exec = NttExec::<P, R>::new(&device);
     let client = exec.client().clone();
 
     let original = make_random_buf::<P>(total, 0xDEADBEEF);

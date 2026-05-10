@@ -192,7 +192,7 @@ can come from the heuristic, the autotuner, or a saved file.
 pub struct NttExec<P: MontyParameters, R: Runtime> { /* client, twiddles, scratch */ }
 
 impl<P, R> NttExec<P, R> {
-    pub fn new(device: &Device<R>, scratch_bytes: usize) -> Self;
+    pub fn new(device: &Device<R>) -> Self;
     pub fn client(&self) -> &ComputeClient<R>;
 
     // Heuristic-planned: the stable surface.
@@ -226,11 +226,16 @@ impl<P, R> NttExec<P, R> {
 `Device<R>` is [`r0-cube`](../r0-cube)'s wrapper around `R::Device` that holds a
 process-shared exclusive file lock so concurrent test binaries don't
 fight for the same GPU. Acquire one with `Device::<R>::acquire()` per
-scope (typically per `#[test]`); pass `&device` to `NttExec::new`.
+scope (typically per `#[test]`); pass `&device` to `NttExec::new`. The
+shared scratch buffer used for multi-pass ping-pong (default 64 MiB)
+also lives on the `Device`; size it explicitly with
+`Device::acquire_with_scratch[_for]` when you need more (e.g. the
+browser demo configures 512 MiB).
 
-`NttExec::new` queries `DeviceLimits` (shared memory, max threads)
-from cubecl at construction time and uses them via the heuristic
-internally. The non-`_with_plan` methods are the recommended path.
+`NttExec::new` queries `DeviceLimits` (shared memory, max threads,
+scratch bytes) from cubecl + the device at construction time and uses
+them via the heuristic internally. The non-`_with_plan` methods are
+the recommended path.
 
 ### 6.3 Planning strategies
 

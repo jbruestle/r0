@@ -82,7 +82,7 @@ Timing:
   `web-time` crate as a drop-in (it dispatches to `performance.now()`).
 
 Scratch buffer:
-- `NttExec::new` allocates a single GPU buffer of `scratch_bytes` bytes. We
+- `Device::acquire_with_scratch_for` allocates a single shared GPU scratch buffer. We
   use 512 MiB so `sub_batch` reaches 128 at log_n=20 (4 MiB/poly). WebGPU's
   reported `max_buffer_size` on this hardware was ~4 GiB, so plenty of
   headroom.

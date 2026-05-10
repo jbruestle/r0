@@ -35,8 +35,9 @@ pub async fn diagnose() -> Result<JsValue, JsValue> {
     let info = setup.adapter.get_info();
     let wgpu_limits = setup.device.limits();
 
-    let device = Device::<WgpuRuntime>::acquire_for(WgpuDevice::DefaultDevice);
-    let exec = NttExec::<BabyBearParameters, WgpuRuntime>::new(&device, SCRATCH_BYTES);
+    let device =
+        Device::<WgpuRuntime>::acquire_with_scratch_for(WgpuDevice::DefaultDevice, SCRATCH_BYTES);
+    let exec = NttExec::<BabyBearParameters, WgpuRuntime>::new(&device);
     let limits = exec.limits();
     let plan = plan_heuristic(20, 32, limits);
     let plan_str = plan
@@ -101,8 +102,9 @@ pub async fn run_benchmark(
     // The device must already be registered by `diagnose()` — re-calling
     // init_setup_async panics ("server already registered"). Device::acquire
     // is a no-op on wasm32 (no concurrent processes in the browser).
-    let device = Device::<WgpuRuntime>::acquire_for(WgpuDevice::DefaultDevice);
-    let exec = NttExec::<BabyBearParameters, WgpuRuntime>::new(&device, SCRATCH_BYTES);
+    let device =
+        Device::<WgpuRuntime>::acquire_with_scratch_for(WgpuDevice::DefaultDevice, SCRATCH_BYTES);
+    let exec = NttExec::<BabyBearParameters, WgpuRuntime>::new(&device);
     let client = exec.client().clone();
 
     let n = 1usize << log_n;

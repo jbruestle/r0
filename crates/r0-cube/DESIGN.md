@@ -17,7 +17,9 @@ Two kinds of thing live here:
 
 1. **Process / device hygiene** — anything that's about *managing* cubecl
    resources across many tests, kernels, and runtimes, rather than about
-   doing math. Currently `Device<R>` (the cross-process device lock).
+   doing math. Currently `Device<R>` (the cross-process device lock,
+   plus the shared `ComputeClient<R>` and a fixed-size scratch `Handle`
+   that all executors borrow rather than allocating their own).
 2. **Generic kernel primitives** — `#[cube]` helpers that aren't tied to a
    specific math object. Initially: a `Monoid` trait + plane- and
    block-level prefix-scan/reduce + a generic `ScanExec` driver that runs
@@ -47,9 +49,13 @@ tests/
                        plumbing bugs before any field-aware recipe touches it.
 ```
 
-`Device<R>` moves over from `r0-field` in the same commit that creates this
-crate, with all `r0_field::Device` imports across the workspace switched to
-`r0_cube::Device` in the same change — no transitional re-export.
+`Device<R>` moved over from `r0-field` in the commit that created this
+crate, with all `r0_field::Device` imports switched to `r0_cube::Device`
+in the same change. A follow-up extended `Device` to also own the
+`ComputeClient<R>` and a single fixed-size scratch buffer; `NttExec`
+(and any future executor) borrows those instead of allocating its own
+ping-pong buffer. Sized at acquire time via
+`Device::acquire_with_scratch[_for]`; default 64 MiB.
 
 ## 3. The Monoid trait
 
@@ -154,8 +160,8 @@ Three concrete recipes we'll have within the first round of code:
 ```rust
 pub struct ScanExec<R: Runtime> {
     client: ComputeClient<R>,
-    // Per-level scratch buffers, allocated lazily on first use:
-    spines: RefCell<Vec<Handle>>,
+    scratch: Handle,    // borrowed clone of device.scratch()
+    // Per-level spine sub-slices live as offset views into `scratch`.
 }
 
 impl<R: Runtime> ScanExec<R> {
@@ -171,6 +177,12 @@ impl<R: Runtime> ScanExec<R> {
     );
 }
 ```
+
+Spines slice into the shared `device.scratch()` via `Handle::offset_start`,
+the same trick `NttExec` uses for sub-batch slicing — no per-executor
+scratch allocation. Total spine bytes across all levels is small (KiB,
+not MiB) so this fits comfortably alongside any NTT ping-pong load on
+the same buffer.
 
 Pipeline:
 

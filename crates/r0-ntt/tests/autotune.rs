@@ -29,7 +29,7 @@ where
     R::Device: Send,
 {
     let device = Device::<R>::acquire();
-    let exec = NttExec::<P, R>::new(&device, 0);
+    let exec = NttExec::<P, R>::new(&device);
     let limits = exec.limits().clone();
 
     eprintln!("Device limits: {:?}", limits);

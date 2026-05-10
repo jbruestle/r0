@@ -11,4 +11,4 @@
 //! workspace.
 
 mod device;
-pub use device::Device;
+pub use device::{Device, DEFAULT_SCRATCH_BYTES};

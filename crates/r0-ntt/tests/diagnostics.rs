@@ -16,7 +16,7 @@ where
     R::Device: Default,
 {
     let device = Device::<R>::acquire();
-    let exec = NttExec::<BabyBearParameters, R>::new(&device, 0);
+    let exec = NttExec::<BabyBearParameters, R>::new(&device);
     let limits = exec.limits();
     let client = R::client(device.inner());
     let props = client.properties();

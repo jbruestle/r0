@@ -26,7 +26,7 @@ fn bench_ntt<P: MontyParameters, R: Runtime>(
     let total = batch * n;
 
     let device = Device::<R>::acquire();
-    let exec = NttExec::<P, R>::new(&device, 0);
+    let exec = NttExec::<P, R>::new(&device);
     let client = R::client(device.inner());
 
     let input: Vec<u32> = (0..total as u32)

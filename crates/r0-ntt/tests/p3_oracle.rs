@@ -62,7 +62,7 @@ where
 {
     let n = 1usize << log_n;
     let device = Device::<R>::acquire();
-    let exec = NttExec::<P, R>::new(&device, 0);
+    let exec = NttExec::<P, R>::new(&device);
     let client = R::client(device.inner());
 
     let mut all_input = Vec::with_capacity(batch * n);
@@ -109,7 +109,7 @@ where
 {
     let n = 1usize << log_n;
     let device = Device::<R>::acquire();
-    let exec = NttExec::<P, R>::new(&device, 0);
+    let exec = NttExec::<P, R>::new(&device);
     let client = R::client(device.inner());
 
     let mut all_input = Vec::with_capacity(batch * n);
@@ -158,7 +158,7 @@ where
 {
     let n = 1usize << log_n;
     let device = Device::<R>::acquire();
-    let exec = NttExec::<P, R>::new(&device, 0);
+    let exec = NttExec::<P, R>::new(&device);
     let client = R::client(device.inner());
 
     let mut all_input = Vec::with_capacity(batch * n);

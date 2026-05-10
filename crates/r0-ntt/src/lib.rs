@@ -17,7 +17,7 @@
 //! use cubecl::cuda::CudaRuntime;
 //!
 //! let device = Device::<CudaRuntime>::acquire();
-//! let exec = NttExec::<BabyBearParameters, CudaRuntime>::new(&device, 0);
+//! let exec = NttExec::<BabyBearParameters, CudaRuntime>::new(&device);
 //!
 //! // 100 NTTs of size 2^20, in place on `buf`.
 //! exec.forward(&buf, 20, 100);

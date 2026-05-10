@@ -12,8 +12,6 @@ use crate::twiddles::{
     build_partial_fwd_twiddles, build_partial_inv_twiddles, n_inv, PARTIAL_TWIDDLE_LEN,
 };
 
-/// Default scratch buffer size: 64 MiB.
-const DEFAULT_SCRATCH_BYTES: usize = 64 * 1024 * 1024;
 const ELEM_BYTES: usize = 4;
 
 /// Device-resident NTT executor.
@@ -48,32 +46,28 @@ pub struct NttExec<P: MontyParameters, R: Runtime> {
 
 impl<P: MontyParameters, R: Runtime> NttExec<P, R> {
     /// Construct an executor on `device`, precomputing twiddle tables for
-    /// every supported `log_n` (1..=24, capped by `P::TWO_ADICITY`) and
-    /// allocating scratch.
+    /// every supported `log_n` (1..=24, capped by `P::TWO_ADICITY`).
     ///
-    /// `scratch_bytes` controls the multi-pass ping-pong buffer. Pass 0
-    /// for the default (64 MiB). Each in-flight polynomial of size
-    /// `2^log_n` consumes `4 << log_n` bytes of scratch, which sets the
-    /// per-launch sub-batch ceiling for multi-pass plans; small scratch
-    /// just means more launch iterations. A power of two is a good
-    /// default.
+    /// Multi-pass NTTs ping-pong through the shared scratch buffer owned
+    /// by the [`Device`]; size that buffer with
+    /// [`Device::acquire_with_scratch`](Device::acquire_with_scratch) /
+    /// [`acquire_with_scratch_for`](Device::acquire_with_scratch_for) when
+    /// the default 64 MiB isn't enough. Each in-flight polynomial of size
+    /// `2^log_n` consumes `4 << log_n` bytes, which sets the per-launch
+    /// sub-batch ceiling for multi-pass plans; smaller scratch just means
+    /// more launch iterations.
     ///
-    /// Setup touches the device (uploads twiddles, allocates scratch),
-    /// so build one and reuse it.
-    pub fn new(device: &Device<R>, scratch_bytes: usize) -> Self {
-        let scratch_bytes = if scratch_bytes == 0 {
-            DEFAULT_SCRATCH_BYTES
-        } else {
-            scratch_bytes
-        };
+    /// Setup touches the device (uploads twiddles), so build one and
+    /// reuse it.
+    pub fn new(device: &Device<R>) -> Self {
         let max_log_n = P::TWO_ADICITY.min(24);
-        let client = R::client(device.inner());
+        let client = device.client().clone();
 
         let props = client.properties();
         let limits = DeviceLimits {
             max_shared_mem_bytes: props.hardware.max_shared_memory_size,
             max_threads_per_wg: props.hardware.max_units_per_cube,
-            scratch_bytes,
+            scratch_bytes: device.scratch_bytes(),
         };
 
         let mut fwd_twiddles = Vec::with_capacity(max_log_n as usize + 1);
@@ -95,8 +89,7 @@ impl<P: MontyParameters, R: Runtime> NttExec<P, R> {
             inv_n_table.push(client.create_from_slice(u32::as_bytes(&[inv_n_val])));
         }
 
-        let scratch_elems = scratch_bytes / ELEM_BYTES;
-        let scratch = client.empty(scratch_elems * ELEM_BYTES);
+        let scratch = device.scratch().clone();
 
         Self {
             client,
