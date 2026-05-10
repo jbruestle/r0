@@ -14,8 +14,12 @@ use cubecl::prelude::*;
 
 use crate::monoid::Monoid;
 
+/// Combine two `Repr` values via `M::combine`, with one round-trip
+/// through `Self`. Crate-internal helper used wherever a generic
+/// scan-style if-else would otherwise return a `M`; staying in `Repr`
+/// keeps cubecl 0.9 happy.
 #[cube]
-fn combine_via<M: Monoid>(left: M::Repr, right: M::Repr) -> M::Repr {
+pub(crate) fn combine_via<M: Monoid>(left: M::Repr, right: M::Repr) -> M::Repr {
     M::to_repr(M::combine(M::from_repr(left), M::from_repr(right)))
 }
 

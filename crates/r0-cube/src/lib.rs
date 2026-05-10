@@ -19,3 +19,9 @@ pub use monoid::Monoid;
 
 mod scan;
 pub use scan::{block_inclusive_reduce, block_inclusive_scan, plane_inclusive_scan};
+
+mod recipe;
+pub use recipe::ScanRecipe;
+
+mod exec;
+pub use exec::ScanExec;
