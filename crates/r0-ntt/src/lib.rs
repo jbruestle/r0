@@ -12,12 +12,11 @@
 //!
 //! ```ignore
 //! use r0_ntt::NttExec;
-//! use r0_field::BabyBearParameters;
+//! use r0_field::{BabyBearParameters, Device};
 //! use cubecl::cuda::CudaRuntime;
 //!
-//! let exec = NttExec::<BabyBearParameters, CudaRuntime>::new(
-//!     &Default::default(), 0,
-//! );
+//! let device = Device::<CudaRuntime>::acquire();
+//! let exec = NttExec::<BabyBearParameters, CudaRuntime>::new(&device, 0);
 //!
 //! // 100 NTTs of size 2^20, in place on `buf`.
 //! exec.forward(&buf, 20, 100);

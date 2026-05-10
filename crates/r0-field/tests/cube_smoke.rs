@@ -8,7 +8,8 @@ use cubecl::prelude::*;
 use cubecl::wgpu::WgpuRuntime;
 
 use r0_field::{
-    monty_mul, BabyBear, BabyBearParameters, KoalaBearParameters, MontyField, MontyParameters,
+    monty_mul, BabyBear, BabyBearParameters, Device, KoalaBearParameters, MontyField,
+    MontyParameters,
 };
 
 #[cube(launch_unchecked)]
@@ -19,13 +20,13 @@ fn vec_monty_mul<P: MontyParameters>(a: &Array<u32>, b: &Array<u32>, out: &mut A
 }
 
 fn run_vec_monty_mul<P: MontyParameters, R: Runtime>(
-    device: &R::Device,
+    device: &Device<R>,
     a: &[u32],
     b: &[u32],
 ) -> Vec<u32> {
     assert_eq!(a.len(), b.len());
     let n = a.len();
-    let client = R::client(device);
+    let client = R::client(device.inner());
 
     let a_handle = client.create_from_slice(u32::as_bytes(a));
     let b_handle = client.create_from_slice(u32::as_bytes(b));
@@ -71,7 +72,8 @@ where
         .map(|(&x, &y)| monty_mul::<P>(x, y))
         .collect();
 
-    let actual = run_vec_monty_mul::<P, R>(&Default::default(), &a, &b);
+    let device = Device::<R>::acquire();
+    let actual = run_vec_monty_mul::<P, R>(&device, &a, &b);
 
     assert_eq!(actual.len(), n);
     assert_eq!(actual, expected);
@@ -109,7 +111,8 @@ fn babybear_vec_mul_spot_check() {
     let a: Vec<u32> = a_field.iter().map(|x| x.raw()).collect();
     let b: Vec<u32> = b_field.iter().map(|x| x.raw()).collect();
 
-    let actual_raw = run_vec_monty_mul::<BabyBearParameters, CpuRuntime>(&Default::default(), &a, &b);
+    let device = Device::<CpuRuntime>::acquire();
+    let actual_raw = run_vec_monty_mul::<BabyBearParameters, CpuRuntime>(&device, &a, &b);
 
     for (i, &raw) in actual_raw.iter().enumerate() {
         let kernel_result = BabyBear::from_raw(raw).to_canonical();

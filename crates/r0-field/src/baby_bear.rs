@@ -4,6 +4,8 @@
 //! impl bit-for-bit (see `~/src/Plonky3/baby-bear/src/baby_bear.rs:18-51`),
 //! enabling direct cross-checks against `p3-baby-bear` in tests.
 
+use crate::ext4::{BinomialExt4Parameters, Ext4};
+use crate::ext5::{BinomialExt5Parameters, Ext5};
 use crate::monty::{MontyField, MontyParameters};
 
 /// Marker type carrying [`MontyParameters`] for the BabyBear field.
@@ -17,6 +19,7 @@ impl MontyParameters for BabyBearParameters {
     /// `MONTY_MU = 0x88000001`; this is `2^32 - that = 0x77FFFFFF`.
     const MU: u32 = 0x77ffffff;
     const R2: u32 = 0x45dddde3;
+    const MONT_ONE: u32 = (((1u64 << 32) % Self::PRIME as u64) as u32);
     const TWO_ADICITY: u32 = 27;
     const TWO_ADIC_GENERATORS: &'static [u32] = &[
         0x1, 0x78000000, 0x67055c21, 0x5ee99486, 0x0bb4c4e4, 0x2d4cc4da, 0x669d6090, 0x17b56c64,
@@ -28,3 +31,29 @@ impl MontyParameters for BabyBearParameters {
 
 /// BabyBear field element: shorthand for [`MontyField<BabyBearParameters>`].
 pub type BabyBear = MontyField<BabyBearParameters>;
+
+/// Degree-4 binomial extension parameters: `F_p[X] / (X^4 - 11)`. Matches
+/// Plonky3's `<BabyBearParameters as BinomialExtensionData<4>>::W = 11`.
+#[derive(Copy, Clone, Default, Debug, Eq, Hash, PartialEq)]
+pub struct BabyBear4Parameters;
+
+impl BinomialExt4Parameters for BabyBear4Parameters {
+    type Base = BabyBearParameters;
+    const W: u32 = 11;
+}
+
+/// BabyBear^4: shorthand for [`Ext4<BabyBear4Parameters>`].
+pub type BabyBear4 = Ext4<BabyBear4Parameters>;
+
+/// Degree-5 binomial extension parameters: `F_p[X] / (X^5 - 2)`. Matches
+/// Plonky3's `<BabyBearParameters as BinomialExtensionData<5>>::W = 2`.
+#[derive(Copy, Clone, Default, Debug, Eq, Hash, PartialEq)]
+pub struct BabyBear5Parameters;
+
+impl BinomialExt5Parameters for BabyBear5Parameters {
+    type Base = BabyBearParameters;
+    const W: u32 = 2;
+}
+
+/// BabyBear^5: shorthand for [`Ext5<BabyBear5Parameters>`].
+pub type BabyBear5 = Ext5<BabyBear5Parameters>;

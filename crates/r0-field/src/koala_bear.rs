@@ -4,6 +4,7 @@
 //! impl bit-for-bit (see `~/src/Plonky3/koala-bear/src/koala_bear.rs:21-76`),
 //! enabling direct cross-checks against `p3-koala-bear` in tests.
 
+use crate::ext4::{BinomialExt4Parameters, Ext4};
 use crate::monty::{MontyField, MontyParameters};
 
 /// Marker type carrying [`MontyParameters`] for the KoalaBear field.
@@ -17,6 +18,7 @@ impl MontyParameters for KoalaBearParameters {
     /// `MONTY_MU = 0x81000001`; this is `2^32 - that = 0x7EFFFFFF`.
     const MU: u32 = 0x7effffff;
     const R2: u32 = 0x17f7efe4;
+    const MONT_ONE: u32 = (((1u64 << 32) % Self::PRIME as u64) as u32);
     const TWO_ADICITY: u32 = 24;
     const TWO_ADIC_GENERATORS: &'static [u32] = &[
         0x1, 0x7f000000, 0x7e010002, 0x6832fe4a, 0x08dbd69c, 0x0a28f031, 0x5c4a5b99, 0x29b75a80,
@@ -28,3 +30,19 @@ impl MontyParameters for KoalaBearParameters {
 
 /// KoalaBear field element: shorthand for [`MontyField<KoalaBearParameters>`].
 pub type KoalaBear = MontyField<KoalaBearParameters>;
+
+/// Degree-4 binomial extension parameters: `F_p[X] / (X^4 - 3)`. Matches
+/// Plonky3's `<KoalaBearParameters as BinomialExtensionData<4>>::W = 3`.
+///
+/// (KoalaBear has no degree-5 binomial extension: `gcd(5, p_KB - 1) = 1`,
+/// so every element of `F_{p_KB}` is already a fifth power.)
+#[derive(Copy, Clone, Default, Debug, Eq, Hash, PartialEq)]
+pub struct KoalaBear4Parameters;
+
+impl BinomialExt4Parameters for KoalaBear4Parameters {
+    type Base = KoalaBearParameters;
+    const W: u32 = 3;
+}
+
+/// KoalaBear^4: shorthand for [`Ext4<KoalaBear4Parameters>`].
+pub type KoalaBear4 = Ext4<KoalaBear4Parameters>;

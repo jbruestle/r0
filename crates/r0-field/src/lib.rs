@@ -31,6 +31,9 @@
 //! bit-for-bit. The test suite property-tests every operation against
 //! `p3-baby-bear` / `p3-koala-bear`, so divergence is caught on CI.
 
+mod device;
+pub use device::Device;
+
 mod monty;
 
 pub use monty::{
@@ -41,5 +44,16 @@ pub use monty::{
 mod baby_bear;
 mod koala_bear;
 
-pub use baby_bear::{BabyBear, BabyBearParameters};
-pub use koala_bear::{KoalaBear, KoalaBearParameters};
+pub use baby_bear::{
+    BabyBear, BabyBear4, BabyBear4Parameters, BabyBear5, BabyBear5Parameters, BabyBearParameters,
+};
+pub use koala_bear::{KoalaBear, KoalaBear4, KoalaBear4Parameters, KoalaBearParameters};
+
+mod ext;
+pub use ext::{BaseElem, ExtField};
+
+mod ext4;
+pub use ext4::{ext4_add, ext4_mul, ext4_neg, ext4_sub, BinomialExt4Parameters, Ext4};
+
+mod ext5;
+pub use ext5::{ext5_add, ext5_mul, ext5_neg, ext5_sub, BinomialExt5Parameters, Ext5};

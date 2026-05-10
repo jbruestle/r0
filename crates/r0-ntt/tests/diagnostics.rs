@@ -7,17 +7,17 @@
 #![cfg(feature = "unstable-planner")]
 
 use cubecl::prelude::*;
-use r0_field::BabyBearParameters;
+use r0_field::{BabyBearParameters, Device};
 use r0_ntt::{plan_heuristic, NttExec};
 
 fn dump_runtime<R: Runtime>(label: &str)
 where
     R::Device: Default,
 {
-    let device = R::Device::default();
+    let device = Device::<R>::acquire();
     let exec = NttExec::<BabyBearParameters, R>::new(&device, 0);
     let limits = exec.limits();
-    let client = R::client(&device);
+    let client = R::client(device.inner());
     let props = client.properties();
 
     eprintln!("=== {label} ===");

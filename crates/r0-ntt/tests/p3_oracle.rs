@@ -9,7 +9,7 @@ use cubecl::prelude::*;
 use p3_dft::{Radix2Dit, TwoAdicSubgroupDft};
 use p3_field::{PrimeField32, TwoAdicField};
 
-use r0_field::{BabyBearParameters, KoalaBearParameters, MontyField, MontyParameters};
+use r0_field::{BabyBearParameters, Device, KoalaBearParameters, MontyField, MontyParameters};
 use r0_ntt::{bit_reverse_in_place, NttExec};
 
 // ---------------------------------------------------------------------------
@@ -60,9 +60,9 @@ where
     R::Device: Default,
 {
     let n = 1usize << log_n;
-    let device = R::Device::default();
+    let device = Device::<R>::acquire();
     let exec = NttExec::<P, R>::new(&device, 0);
-    let client = R::client(&device);
+    let client = R::client(device.inner());
 
     let mut all_input = Vec::with_capacity(batch * n);
     let mut expected = Vec::with_capacity(batch * n);
@@ -107,9 +107,9 @@ where
     R::Device: Default,
 {
     let n = 1usize << log_n;
-    let device = R::Device::default();
+    let device = Device::<R>::acquire();
     let exec = NttExec::<P, R>::new(&device, 0);
-    let client = R::client(&device);
+    let client = R::client(device.inner());
 
     let mut all_input = Vec::with_capacity(batch * n);
     let mut expected = Vec::with_capacity(batch * n);
@@ -156,9 +156,9 @@ where
     R::Device: Default,
 {
     let n = 1usize << log_n;
-    let device = R::Device::default();
+    let device = Device::<R>::acquire();
     let exec = NttExec::<P, R>::new(&device, 0);
-    let client = R::client(&device);
+    let client = R::client(device.inner());
 
     let mut all_input = Vec::with_capacity(batch * n);
     for b in 0..batch {

@@ -8,7 +8,7 @@
 use cubecl::prelude::*;
 use cubecl::wgpu::WgpuRuntime;
 use cubecl_wgpu::{init_setup_async, AutoGraphicsApi, RuntimeOptions, WgpuDevice};
-use r0_field::{BabyBearParameters, MontyField, MontyParameters};
+use r0_field::{BabyBearParameters, Device, MontyField, MontyParameters};
 use r0_ntt::{plan_heuristic, NttExec};
 use wasm_bindgen::prelude::*;
 use web_time::Instant;
@@ -25,12 +25,16 @@ pub fn start() {
 /// Initialize the wgpu device and return device/limit info as JSON.
 #[wasm_bindgen]
 pub async fn diagnose() -> Result<JsValue, JsValue> {
-    let device = WgpuDevice::DefaultDevice;
-    let setup = init_setup_async::<AutoGraphicsApi>(&device, RuntimeOptions::default()).await;
+    let setup = init_setup_async::<AutoGraphicsApi>(
+        &WgpuDevice::DefaultDevice,
+        RuntimeOptions::default(),
+    )
+    .await;
 
     let info = setup.adapter.get_info();
     let wgpu_limits = setup.device.limits();
 
+    let device = Device::<WgpuRuntime>::acquire_for(WgpuDevice::DefaultDevice);
     let exec = NttExec::<BabyBearParameters, WgpuRuntime>::new(&device, SCRATCH_BYTES);
     let limits = exec.limits();
     let plan = plan_heuristic(20, 32, limits);
@@ -94,8 +98,9 @@ pub async fn run_benchmark(
     samples: u32,
 ) -> Result<JsValue, JsValue> {
     // The device must already be registered by `diagnose()` — re-calling
-    // init_setup_async panics ("server already registered").
-    let device = WgpuDevice::DefaultDevice;
+    // init_setup_async panics ("server already registered"). Device::acquire
+    // is a no-op on wasm32 (no concurrent processes in the browser).
+    let device = Device::<WgpuRuntime>::acquire_for(WgpuDevice::DefaultDevice);
     let exec = NttExec::<BabyBearParameters, WgpuRuntime>::new(&device, SCRATCH_BYTES);
     let client = exec.client().clone();
 

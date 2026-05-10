@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use cubecl::prelude::*;
 
-use r0_field::{BabyBearParameters, MontyParameters};
+use r0_field::{BabyBearParameters, Device, MontyParameters};
 use r0_ntt::{enumerate_valid_plans, heuristic_score, NttExec, NttPlan};
 
 fn autotune<P: MontyParameters, R: Runtime>(
@@ -27,7 +27,7 @@ where
     R: 'static,
     R::Device: Send,
 {
-    let device = R::Device::default();
+    let device = Device::<R>::acquire();
     let exec = NttExec::<P, R>::new(&device, 0);
     let limits = exec.limits().clone();
 

@@ -22,10 +22,22 @@ cargo build --workspace
 cargo test --workspace
 ```
 
-The default feature set enables the CUDA, wgpu, and CPU backends.
-CUDA tests need an NVIDIA host. Autotune and diagnostics integration
-tests are gated behind `r0-ntt`'s `unstable-planner` feature and run
-only with `--ignored`.
+Default features enable the wgpu and CPU backends. The CUDA backend is
+opt-in (it links `libcuda` at runtime, which would make `cargo test
+--workspace` panic on machines without an NVIDIA driver). On a CUDA
+host:
+
+```sh
+cargo test --workspace --features r0-ntt/cuda
+```
+
+Autotune and diagnostics integration tests are gated behind `r0-ntt`'s
+`unstable-planner` feature and run only with `--ignored`.
+
+GPU tests acquire a process-shared file lock (`r0_field::Device`) so
+multiple test binaries can't fight for the same device under cargo's
+default per-binary parallelism — `cargo test --workspace` works without
+a `--test-threads=1` workaround.
 
 ## License
 

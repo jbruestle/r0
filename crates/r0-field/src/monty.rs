@@ -45,6 +45,14 @@ pub trait MontyParameters: Copy + Clone + Default + Send + Sync + 'static {
     /// `R^2 mod p` where `R = 2^32`. Used to lift canonical → Montgomery.
     const R2: u32;
 
+    /// `R mod p` where `R = 2^32` — Montgomery form of canonical `1`.
+    /// Each impl computes this as
+    /// `(((1u64 << 32) % Self::PRIME as u64) as u32)`. We can't put a
+    /// default that uses `Self::PRIME` here because Rust refuses to use
+    /// trait-const defaults through generic bounds (E0790), so each
+    /// concrete impl spells it out.
+    const MONT_ONE: u32;
+
     /// 2-adicity: `s` such that `2^s | p - 1` and `2^(s+1) ∤ p - 1`.
     const TWO_ADICITY: u32;
 
@@ -245,4 +253,32 @@ pub fn monty_reduce_split<P: MontyParameters>(hi: u32, lo: u32) -> u32 {
     // Step 5: bring into [0, p). Output is in [0, 2p); for our primes
     // 2p < 2^32 so a single subtract suffices.
     if result >= P::PRIME { result - P::PRIME } else { result }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Local sanity asserts that catch a botched `const fn` MONT_ONE before
+    //! any kernel code touches it.
+    use super::*;
+    use crate::{BabyBearParameters, KoalaBearParameters};
+
+    fn check_mont_one<P: MontyParameters>() {
+        // `MONT_ONE` should equal Montgomery-form lifting of canonical 1,
+        // independently computed via the existing `MontyField::from_canonical`.
+        let independent = MontyField::<P>::from_canonical(1).raw();
+        assert_eq!(P::MONT_ONE, independent);
+        // It should also satisfy the textbook `R mod p` identity.
+        let textbook = ((1u64 << 32) % P::PRIME as u64) as u32;
+        assert_eq!(P::MONT_ONE, textbook);
+    }
+
+    #[test]
+    fn mont_one_baby_bear() {
+        check_mont_one::<BabyBearParameters>();
+    }
+
+    #[test]
+    fn mont_one_koala_bear() {
+        check_mont_one::<KoalaBearParameters>();
+    }
 }

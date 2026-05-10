@@ -2,7 +2,7 @@
 
 use cubecl::prelude::*;
 use cubecl::server::Handle;
-use r0_field::MontyParameters;
+use r0_field::{Device, ExtField, MontyParameters};
 
 use crate::fwd_pass::ntt_fwd_pass;
 use crate::inv_pass::ntt_inv_pass;
@@ -59,14 +59,14 @@ impl<P: MontyParameters, R: Runtime> NttExec<P, R> {
     ///
     /// Setup touches the device (uploads twiddles, allocates scratch),
     /// so build one and reuse it.
-    pub fn new(device: &R::Device, scratch_bytes: usize) -> Self {
+    pub fn new(device: &Device<R>, scratch_bytes: usize) -> Self {
         let scratch_bytes = if scratch_bytes == 0 {
             DEFAULT_SCRATCH_BYTES
         } else {
             scratch_bytes
         };
         let max_log_n = P::TWO_ADICITY.min(24);
-        let client = R::client(device);
+        let client = R::client(device.inner());
 
         let props = client.properties();
         let limits = DeviceLimits {
@@ -152,6 +152,42 @@ impl<P: MontyParameters, R: Runtime> NttExec<P, R> {
     pub fn inverse(&self, buf: &Handle, log_n: u32, batch: usize) {
         let plan = plan_heuristic(log_n, batch, &self.limits);
         self.run_inverse(buf, &plan, batch);
+    }
+
+    /// Forward NTT for `batch` polynomials of length `2^log_n` whose
+    /// elements are in the field `F`, where `F` is the base field `P` or
+    /// any extension over `P` laid out transposed (component-major within
+    /// each polynomial).
+    ///
+    /// Equivalent to [`forward(buf, log_n, batch * F::DEGREE)`](Self::forward) —
+    /// a degree-`D` extension polynomial of length `N` is bitwise identical
+    /// to `D` consecutive base-field polynomials of length `N`, so the NTT
+    /// works as-is. This method exists to bind the extension type at the
+    /// call site so the type system catches `BabyBear4` fed to a
+    /// `KoalaBear` executor before it silently corrupts data.
+    ///
+    /// # Panics
+    /// Panics if `log_n` is outside `[1, P::TWO_ADICITY.min(24)]`.
+    pub fn forward_ext<F: ExtField<Base = P>>(
+        &self,
+        buf: &Handle,
+        log_n: u32,
+        batch: usize,
+    ) {
+        self.forward(buf, log_n, batch * F::DEGREE as usize);
+    }
+
+    /// Inverse NTT counterpart to [`forward_ext`](Self::forward_ext).
+    ///
+    /// # Panics
+    /// Panics if `log_n` is outside `[1, P::TWO_ADICITY.min(24)]`.
+    pub fn inverse_ext<F: ExtField<Base = P>>(
+        &self,
+        buf: &Handle,
+        log_n: u32,
+        batch: usize,
+    ) {
+        self.inverse(buf, log_n, batch * F::DEGREE as usize);
     }
 
     /// Forward NTT (R→N) using an explicit [`NttPlan`].

@@ -3,7 +3,7 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 use cubecl::prelude::*;
 
-use r0_field::MontyParameters;
+use r0_field::{Device, MontyParameters};
 use r0_ntt::NttExec;
 
 #[derive(Clone, Copy)]
@@ -24,9 +24,9 @@ fn bench_ntt<P: MontyParameters, R: Runtime>(
     let n = 1usize << log_n;
     let total = batch * n;
 
-    let device = R::Device::default();
+    let device = Device::<R>::acquire();
     let exec = NttExec::<P, R>::new(&device, 0);
-    let client = R::client(&device);
+    let client = R::client(device.inner());
 
     let input: Vec<u32> = (0..total as u32)
         .map(|i| {
