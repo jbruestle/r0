@@ -6,6 +6,15 @@ license.workspace = true
 publish.workspace = true
 rust-version.workspace = true
 
+[features]
+# Backend feature flags mirror r0-ntt's pattern. `cuda` is opt-in; on
+# hosts without an NVIDIA driver `cargo test --workspace` would fail
+# unhelpfully if it were on by default.
+default = ["wgpu", "cpu"]
+cuda = ["cubecl/cuda"]
+wgpu = ["cubecl/wgpu"]
+cpu = ["cubecl/cpu"]
+
 [dependencies]
 cubecl = { workspace = true }
 
