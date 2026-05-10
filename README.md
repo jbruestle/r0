@@ -7,10 +7,11 @@ CUDA, wgpu (Vulkan/Metal/WebGPU), and CPU.
 ## Crates
 
 - [`r0-cube`](crates/r0-cube) — project-specific helpers on top of
-  cubecl. Currently holds `Device<R>`, the per-runtime cross-process
-  lock used to serialize GPU tests under cargo's per-binary parallelism.
-  Generic kernel primitives (Monoid, scans, `ScanRecipe` driver) land
-  here next.
+  cubecl: the `Device<R>` lock + shared scratch, the `Monoid` trait
+  with plane- and block-level scan / reduce primitives, and the
+  recipe-driven `ScanExec` driver (with recursive spine for
+  `n > wg_size²`). See [the crate README](crates/r0-cube/README.md)
+  for design.
 - [`r0-field`](crates/r0-field) — 31-bit Montgomery prime fields
   (BabyBear, KoalaBear) plus their degree-4/5 binomial extensions
   (BB^4, KB^4, BB^5), and the `ExtField` `#[cube]` trait that lets

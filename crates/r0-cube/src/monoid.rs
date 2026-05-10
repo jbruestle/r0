@@ -37,8 +37,9 @@
 
 use cubecl::prelude::*;
 
-/// An algebraic monoid usable with the cubecl-side scan primitives in
-/// [`crate::scan`].
+/// An algebraic monoid usable with the cubecl-side scan primitives
+/// ([`crate::plane_inclusive_scan()`], [`crate::block_inclusive_scan()`],
+/// [`crate::block_inclusive_reduce()`]).
 #[cube]
 pub trait Monoid: CubeType + Copy + Clone + Sized + Send + Sync + 'static {
     /// `CubePrimitive` wire format for this monoid value. The scan

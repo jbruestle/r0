@@ -45,8 +45,8 @@ use crate::monoid::Monoid;
 #[cube]
 pub trait ScanRecipe: 'static + Send + Sync {
     /// The monoid the scan operates on. `ScanExec` instantiates the
-    /// generic [`crate::block_inclusive_scan`] / [`crate::block_inclusive_reduce`]
-    /// against this type.
+    /// generic [`crate::block_inclusive_scan()`] /
+    /// [`crate::block_inclusive_reduce()`] against this type.
     type Monoid: Monoid;
 
     /// Load element at `scan_pos` of batch row `batch` (out of

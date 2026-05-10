@@ -1,18 +1,32 @@
-//! Project-specific helpers on top of cubecl.
+//! Project-specific helpers on top of cubecl: the cross-process
+//! [`Device<R>`] lock and shared scratch, the algebraic [`Monoid`]
+//! trait, the plane- and block-level scan primitives
+//! ([`plane_inclusive_scan()`] / [`block_inclusive_scan()`] /
+//! [`block_inclusive_reduce()`]), and the recipe-driven [`ScanExec`]
+//! driver ([`ScanRecipe`]) used by `r0-polynomial` and any other
+//! prefix-scan-shaped pipeline.
 //!
-//! This crate is the workspace's home for cubecl-related machinery that
-//! isn't tied to a specific math object: process / device hygiene
-//! ([`Device<R>`]) and generic kernel primitives ([`Monoid`] +
-//! [`plane_inclusive_scan`] / [`block_inclusive_scan`] /
-//! [`block_inclusive_reduce`]). The forthcoming `ScanRecipe` /
-//! `ScanExec` driver used by `r0-polynomial` builds on these.
+//! r0-cube is intentionally type-agnostic: it knows about `CubeType`s
+//! and trait-generic associativity but never touches a specific math
+//! object. Monoid impls live with the type they wrap (`Sum<F>` and
+//! `PairScan<F>` over `r0-field` elements live in `r0-field` /
+//! `r0-polynomial`, not here).
 //!
-//! Trait *implementations* live with the type they operate on, not here:
-//! e.g. `Sum<F>` for additive scans over `r0-field` elements lives in
-//! `r0-field` next to `Ext4` / `Ext5`.
+//! See the crate README for design and a full pipeline walkthrough.
+//!
+//! # Quick start
+//!
+//! ```ignore
+//! use r0_cube::{Device, ScanExec};
+//! use cubecl::wgpu::WgpuRuntime;
+//!
+//! let device = Device::<WgpuRuntime>::acquire();
+//! let exec = ScanExec::<WgpuRuntime, MyRecipe>::new(&device, /*log_n_max*/ 20, /*max_batch*/ 32);
+//! exec.run(&contexts, &input, &output, /*log_n*/ 20, /*batch*/ 32);
+//! ```
 
 mod device;
-pub use device::{Device, DEFAULT_SCRATCH_BYTES};
+pub use device::Device;
 
 mod monoid;
 pub use monoid::Monoid;

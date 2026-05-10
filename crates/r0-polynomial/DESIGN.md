@@ -74,6 +74,20 @@ exactly the desired output.
 
 ### 3.3 Recipe
 
+The shipped `r0_cube::ScanRecipe` shape (after step-3 implementation —
+slightly different from the original sketch in this doc):
+
+- No separate `Input` / `Output` / `Context` associated types. The
+  recipe's `load` reads u32s directly and constructs the monoid; its
+  `store` projects and writes u32s. Per-batch context flows in as
+  `&Array<u32>` and the recipe interprets the layout (we read it via
+  `F::load`).
+- Recipe owns the index transformation, which is what we want anyway:
+  to make the inclusive scan walk the polynomial in *descending* degree
+  order (so the Horner-style recurrence accumulates from `a_{n-1}` down
+  to `a_0`), the recipe reads `arr[n - 1 - scan_pos]` and writes back
+  to the same flipped position.
+
 ```rust
 pub struct DivByXMinusZ<F: ExtField>;
 
@@ -82,29 +96,69 @@ pub struct PairScan<F: ExtField> { pub p: F, pub a: F }
 
 #[cube]
 impl<F: ExtField> Monoid for PairScan<F> {
-    fn identity() -> Self            { Self { p: F::one(),  a: F::zero() } }
+    type Repr = …;  // see §3.6
+
+    fn identity() -> Self { Self { p: F::one(),  a: F::zero() } }
     fn combine(l: Self, r: Self) -> Self {
         Self { p: F::mul(l.p, r.p),
                a: F::add(F::mul(r.p, l.a), r.a) }
     }
+    fn to_repr(value: Self) -> Self::Repr { … }
+    fn from_repr(repr: Self::Repr) -> Self { … }
 }
 
 #[cube]
 impl<F: ExtField> ScanRecipe for DivByXMinusZ<F> {
-    type Input  = F;
     type Monoid = PairScan<F>;
-    type Output = F;
-    type Context = F;                                // = z (per batch row)
 
-    fn lift(z: F, c: F, _pos: u32) -> PairScan<F> { PairScan { p: z, a: c } }
-    fn project(s: PairScan<F>, _pos: u32) -> F     { s.a }
+    fn load(zs: &Array<u32>, input: &Array<u32>, batch: u32, scan_pos: u32, n: u32, batch_count: u32) -> PairScan<F> {
+        // descending order: read coefficient n-1-scan_pos
+        let c = F::load(input, batch * n * F::DEGREE, n - 1 - scan_pos, n);
+        // per-batch z (transposed layout, batch_count rows of F::DEGREE comps each)
+        let z = F::load(zs, 0, batch, batch_count);
+        PairScan { p: z, a: c }
+    }
+
+    fn store(_zs: &Array<u32>, output: &mut Array<u32>, batch: u32, scan_pos: u32, n: u32, _batch_count: u32, m: PairScan<F>) {
+        F::store(output, batch * n * F::DEGREE, n - 1 - scan_pos, n, m.a);
+    }
 }
 ```
 
 The recipe is the only file that touches the math; `ScanExec` does the
-lifting, scanning, level-0 relift, and recursive-spine plumbing.
+scanning, level-0 relift, and recursive-spine plumbing.
 
-### 3.4 API and conventions
+### 3.4 PairScan::Repr and the BB5 padding question
+
+`r0_cube::Monoid` requires a `Repr: CubePrimitive` wire format (cubecl
+0.9 only natively supports a closed set of "primitive" types in
+`SharedMemory<T>` indexing, `plane_shuffle_up`, generic mutation, and
+generic if-else — see r0-cube's README §3.1). We ship `Line<u32, N>`
+for `N ∈ {1, 2, 4, 8, 16}` since power-of-two line sizes are what GPU
+backends natively support.
+
+PairScan's u32 word count by field:
+
+| F | F::DEGREE | PairScan u32 words | Natural Repr |
+|---|---|---|---|
+| `BaseElem<BB>` | 1 | 2 | `Line<u32, 2>` |
+| `BaseElem<KB>` | 1 | 2 | `Line<u32, 2>` |
+| `Ext4<BB>` | 4 | 8 | `Line<u32, 8>` |
+| `Ext4<KB>` | 4 | 8 | `Line<u32, 8>` |
+| `Ext5<BB>` | 5 | **10** | `Line<u32, 16>` (37% padding) |
+
+BB5 is the awkward one — 10 isn't a power of two. Plan: pad to
+`Line<u32, 16>` and waste 6 u32 lanes. Spine memory cost at log_n=20,
+batch=32: `32 × 16 × 16 = 8 KiB` (vs 5 KiB unpadded). Trivial against
+device scratch. Worth revisiting if perf benchmarking shows the wider
+load/store hurts; the alternative is a tuple of two Line types and
+fanning out the cubecl plumbing per-field, more intrusive.
+
+Sum<F> (used by FRI fold etc.) has the same shape question with
+`F::DEGREE` words instead of `2 × F::DEGREE`; same padding plan for
+BB5 (`Line<u32, 8>` for 5 real words).
+
+### 3.5 API and conventions
 
 ```rust
 pub struct PolyDivExec<R: Runtime> { scan: ScanExec<R> }
@@ -141,7 +195,7 @@ input and is `r`. Mapping scan position `k → output index` is just
 remainder. (Sppark's `rotate=false` mode rotates the other way; we don't
 need it.)
 
-### 3.5 Generic over the inner field
+### 3.6 Generic over the inner field
 
 `F: ExtField` covers all five field instances we ship — `BaseElem<P>`
 when the polynomial is base-field, `Ext4<P>` for degree-4 extensions,

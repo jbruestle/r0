@@ -114,7 +114,6 @@ fn run_case<R: Runtime>(
     batch: usize,
     label: &str,
 ) {
-    eprintln!("  case `{label}` (log_n={log_n}, batch={batch})");
     let n = 1usize << log_n;
     let total = batch * n;
 

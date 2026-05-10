@@ -114,7 +114,7 @@ pub fn block_inclusive_scan<M: Monoid>(
 /// Inclusive reduce across an entire workgroup. Returns the same total
 /// to every lane.
 ///
-/// Cheaper than [`block_inclusive_scan`] — no per-lane carry phase.
+/// Cheaper than [`block_inclusive_scan()`] — no per-lane carry phase.
 /// The block total ends up in slot 0 of `scratch` and is read by every
 /// lane.
 #[cube]

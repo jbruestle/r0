@@ -34,8 +34,9 @@ use cubecl::prelude::*;
 use cubecl::server::Handle;
 
 /// Default scratch size used by [`Device::acquire`] / [`Device::acquire_for`]:
-/// 64 MiB.
-pub const DEFAULT_SCRATCH_BYTES: usize = 64 * 1024 * 1024;
+/// 64 MiB. Internal — callers that need a different budget go through
+/// the `acquire_with_scratch[_for]` constructors with an explicit value.
+const DEFAULT_SCRATCH_BYTES: usize = 64 * 1024 * 1024;
 
 /// Process-wide exclusive guard around a cubecl device, with a shared
 /// scratch buffer.
@@ -66,8 +67,8 @@ pub struct Device<R: Runtime> {
 
 impl<R: Runtime> Device<R> {
     /// Acquire exclusive access to the default device for runtime `R`
-    /// with the default scratch budget ([`DEFAULT_SCRATCH_BYTES`]).
-    /// Blocks until any other holder releases.
+    /// with the default scratch budget (64 MiB). Blocks until any other
+    /// holder releases.
     pub fn acquire() -> Self
     where
         R::Device: Default,
@@ -140,7 +141,7 @@ impl<R: Runtime> Device<R> {
     /// Size of the shared scratch buffer in bytes (the value passed to
     /// [`acquire_with_scratch`](Self::acquire_with_scratch) /
     /// [`acquire_with_scratch_for`](Self::acquire_with_scratch_for), or
-    /// [`DEFAULT_SCRATCH_BYTES`] for the no-arg constructors).
+    /// the default 64 MiB for the no-arg constructors).
     pub fn scratch_bytes(&self) -> usize {
         self.scratch_bytes
     }
