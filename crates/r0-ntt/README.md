@@ -333,7 +333,7 @@ WGSL for the wgpu backend regardless of the underlying GPU API.
 - Warp-shuffle butterflies: sppark uses `__shfl_xor_sync` for inner
   stages
 
-## 9. File layout
+## 8. File layout
 
 ```
 src/
@@ -349,7 +349,7 @@ src/
   twiddles.rs      -- host-side partial twiddle construction, bit_reverse_in_place
 ```
 
-## 10. Testing
+## 9. Testing
 
 All tests are gated behind backend feature flags (`cuda`, `wgpu`,
 `cpu`); planner-driven tests additionally require `unstable-planner`.
@@ -376,7 +376,7 @@ All tests are gated behind backend feature flags (`cuda`, `wgpu`,
 - **Twiddle unit tests**: partial twiddle reconstruction verified
   exhaustively against the flat reference for all `k` in `[0, N/2)`.
 
-## 11. Future work
+## 10. Future work
 
 - **Autotune persistence**: save/load best plans per
   `(device, log_n, batch)`.

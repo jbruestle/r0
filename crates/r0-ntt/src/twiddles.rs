@@ -93,7 +93,7 @@ pub const PARTIAL_TWIDDLE_LEN: usize = NUM_WINDOWS * WINDOW_SIZE; // 3072
 pub fn build_partial_fwd_twiddles<P: MontyParameters>(log_n: u32) -> Vec<u32> {
     assert!(log_n >= 1);
     let omega = MontyField::<P>::from_canonical(P::TWO_ADIC_GENERATORS[log_n as usize]);
-    build_partial_table::<P>(omega, log_n)
+    build_partial_table::<P>(omega)
 }
 
 /// Build an inverse partial twiddle table for the given `log_n`.
@@ -103,10 +103,10 @@ pub fn build_partial_inv_twiddles<P: MontyParameters>(log_n: u32) -> Vec<u32> {
     assert!(log_n >= 1);
     let omega = MontyField::<P>::from_canonical(P::TWO_ADIC_GENERATORS[log_n as usize]);
     let inv_omega = pow_field::<P>(omega, (1u32 << log_n) - 1);
-    build_partial_table::<P>(inv_omega, log_n)
+    build_partial_table::<P>(inv_omega)
 }
 
-fn build_partial_table<P: MontyParameters>(omega: MontyField<P>, _log_n: u32) -> Vec<u32> {
+fn build_partial_table<P: MontyParameters>(omega: MontyField<P>) -> Vec<u32> {
     let mut out = vec![0u32; PARTIAL_TWIDDLE_LEN];
     // Window 0: partial[0][i] = omega^i
     let mut base = omega; // omega^(2^0) = omega

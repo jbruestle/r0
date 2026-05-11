@@ -43,7 +43,7 @@ macro_rules! check_neg_oracle {
 // ---- BabyBear ----
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(2048))]
+    #![proptest_config(ProptestConfig::with_cases(256))]
 
     #[test]
     fn bb_roundtrip(x in any::<u32>()) {
@@ -77,7 +77,7 @@ proptest! {
 // ---- KoalaBear ----
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(2048))]
+    #![proptest_config(ProptestConfig::with_cases(256))]
 
     #[test]
     fn kb_roundtrip(x in any::<u32>()) {

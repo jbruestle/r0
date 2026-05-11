@@ -356,7 +356,7 @@ impl<P: MontyParameters, R: Runtime> NttExec<P, R> {
 
     fn copy_to_user(&self, dst: &Handle, count: usize) {
         let wg_size = 256u32;
-        let grid = ((count as u32 + wg_size - 1) / wg_size, 1, 1);
+        let grid = (count.div_ceil(wg_size as usize) as u32, 1, 1);
 
         unsafe {
             copy_kernel::launch_unchecked::<R>(

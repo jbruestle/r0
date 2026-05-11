@@ -50,6 +50,7 @@ pub struct DeviceLimits {
 }
 
 /// Errors from [`validate_plan`].
+#[cfg(feature = "unstable-planner")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlanError {
     LogNZero,
@@ -67,6 +68,7 @@ pub enum PlanError {
 }
 
 /// Validate a plan against device limits. Returns all constraint violations found.
+#[cfg(feature = "unstable-planner")]
 pub fn validate_plan(plan: &NttPlan, limits: &DeviceLimits) -> Result<(), Vec<PlanError>> {
     let mut errors = Vec::new();
 
@@ -186,6 +188,7 @@ pub fn validate_plan(plan: &NttPlan, limits: &DeviceLimits) -> Result<(), Vec<Pl
 /// Used by the autotuner to order trial plans: score all candidates, sort
 /// ascending, benchmark in that order. The heuristic doesn't need to be
 /// precise — it just needs to avoid burying the best plan deep in the list.
+#[cfg(feature = "unstable-planner")]
 pub fn heuristic_score(plan: &NttPlan) -> f64 {
     score_passes(&plan.passes)
 }
@@ -281,6 +284,7 @@ pub fn plan_heuristic(log_n: u32, batch: usize, limits: &DeviceLimits) -> NttPla
 /// Generates plans with 1 through `max_passes` passes, all valid
 /// pass-size compositions, and all valid (z_count, log_wg) combinations
 /// per pass. Plans are returned unsorted.
+#[cfg(feature = "unstable-planner")]
 pub fn enumerate_valid_plans(
     log_n: u32,
     batch: usize,
@@ -307,7 +311,7 @@ pub fn enumerate_valid_plans(
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/// Largest log_pass where z_count=1 fits in shared memory.
+#[cfg(feature = "unstable-planner")]
 fn max_fitting_log_pass(limits: &DeviceLimits) -> u32 {
     // 2^log_pass * 4 <= shared_mem
     if limits.max_shared_mem_bytes < ELEM_BYTES {
@@ -317,7 +321,7 @@ fn max_fitting_log_pass(limits: &DeviceLimits) -> u32 {
     31 - (max_elems as u32).leading_zeros()
 }
 
-/// Generate all compositions of `n` into `k` parts, each in `[min_part, max_part]`.
+#[cfg(feature = "unstable-planner")]
 fn compositions(n: u32, k: usize, min_part: u32, max_part: u32) -> Vec<Vec<u32>> {
     if k == 0 {
         return if n == 0 { vec![vec![]] } else { vec![] };
@@ -341,8 +345,7 @@ fn compositions(n: u32, k: usize, min_part: u32, max_part: u32) -> Vec<Vec<u32>>
     result
 }
 
-/// For a given pass-size composition, enumerate all valid (z_count, log_wg)
-/// combinations per pass and add valid plans to `out`.
+#[cfg(feature = "unstable-planner")]
 fn enumerate_params(
     log_n: u32,
     pass_sizes: &[u32],
@@ -442,12 +445,7 @@ fn best_log_wg(log_pass: u32, limits: &DeviceLimits) -> u32 {
     (log_pass - 1).min(device_max)
 }
 
-/// Largest valid power-of-two z_count for a pass, capped.
-///
-/// Used by both enumeration (returns the hard max) and the heuristic.
-/// The heuristic caps at 8: empirically, z=4-8 tends to beat higher values
-/// because lower shared memory usage improves occupancy (more concurrent
-/// workgroups). The enumeration uses this to set the upper bound for search.
+#[cfg(feature = "unstable-planner")]
 fn best_z_count(log_pass: u32, log_n: u32, limits: &DeviceLimits) -> u32 {
     max_z_count(log_pass, log_n, limits, 32)
 }
@@ -491,7 +489,7 @@ fn compute_sub_batch(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "unstable-planner"))]
 mod tests {
     use super::*;
 

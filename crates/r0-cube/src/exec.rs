@@ -199,7 +199,7 @@ impl<R: Runtime, Recipe: ScanRecipe> ScanExec<R, Recipe> {
         }
 
         let levels = spine_levels_needed(log_n, self.log_wg);
-        debug_assert!(levels <= self.spines.len() as u32 - 1);
+        debug_assert!(levels < self.spines.len() as u32);
 
         // Phase 1: reduce up.
         let nb_0 = num_blocks_at_level(log_n, self.log_wg, 0);
@@ -241,7 +241,11 @@ impl<R: Runtime, Recipe: ScanRecipe> ScanExec<R, Recipe> {
         let n = 1u32 << log_n;
         let kernel_log_wg = log_n.min(self.log_wg);
         let kernel_wg_size = 1u32 << kernel_log_wg;
-        let num_warps = 1u32 << (kernel_log_wg.saturating_sub(self.log_warp));
+        // Cap log_warp to the actual workgroup size — if n < warp_size,
+        // we launch fewer threads than a full warp and the plane scan
+        // must not shuffle beyond the live lanes.
+        let kernel_log_warp = self.log_warp.min(kernel_log_wg);
+        let num_warps = 1u32 << (kernel_log_wg.saturating_sub(kernel_log_warp));
 
         let in_count = (input.size() / U32_BYTES) as usize;
         let out_count = (output.size() / U32_BYTES) as usize;
@@ -255,7 +259,7 @@ impl<R: Runtime, Recipe: ScanRecipe> ScanExec<R, Recipe> {
                 ArrayArg::from_raw_parts::<u32>(contexts, ctx_count, 1),
                 ArrayArg::from_raw_parts::<u32>(input, in_count, 1),
                 ArrayArg::from_raw_parts::<u32>(output, out_count, 1),
-                self.log_warp,
+                kernel_log_warp,
                 kernel_log_wg,
                 num_warps,
                 batch_count,

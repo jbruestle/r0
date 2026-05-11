@@ -7,14 +7,9 @@ publish.workspace = true
 rust-version.workspace = true
 
 [features]
-# `cuda` is opt-in: it requires `libcuda` at test time, so on hosts
-# without an NVIDIA driver `cargo test --workspace` would fail unhelpfully.
-# CUDA developers run `cargo test --workspace --features r0-ntt/cuda` (or
-# `cargo test -F cuda` from inside the r0-ntt crate).
-default = ["wgpu", "cpu"]
-cuda = ["cubecl/cuda"]
-wgpu = ["cubecl/wgpu"]
-cpu = ["cubecl/cpu"]
+default = []
+cuda = ["r0-cube/cuda"]
+wgpu = ["r0-cube/wgpu"]
 # Exposes the planner (NttPlan, PassConfig, plan_heuristic, validate_plan,
 # enumerate_valid_plans, heuristic_score, DeviceLimits) and the
 # explicit-plan executor methods (forward_with_plan, inverse_with_plan,

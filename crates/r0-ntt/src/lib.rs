@@ -37,6 +37,13 @@
 //! See the crate README for the multi-pass kernel design and
 //! performance results.
 
+// cubecl's #[cube] macro expansion produces identity casts (e.g.
+// `ABSOLUTE_POS as usize`) that clippy flags. These are required by the
+// macro's type wiring.
+#![allow(clippy::useless_conversion, clippy::unnecessary_cast)]
+// Kernel-launch helpers carry many comptime parameters by design.
+#![allow(clippy::too_many_arguments)]
+
 mod exec;
 mod fwd_pass;
 mod inv_pass;

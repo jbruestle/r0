@@ -128,8 +128,7 @@ boilerplate: ~25 LOC.
 ## 5. Deviations from DESIGN.md
 
 The shipped implementation differs from
-[`DESIGN.md`](https://github.com/r0-prover-rewrite — replaced by this
-README) in three ways. Captured here so the diff is first-class.
+the original `DESIGN.md` (replaced by this README) in three ways. Captured here so the diff is first-class.
 
 1. **r0-cube's `Monoid` trait grew `REPR_LANES` and `alloc_scratch`.**
    The original sketch had `type Repr: CubePrimitive` only. cubecl 0.9's

@@ -168,6 +168,7 @@ fn acquire_lock_file<R: Runtime>() -> std::fs::File {
         .read(true)
         .write(true)
         .create(true)
+        .truncate(false)
         .open(&path)
         .unwrap_or_else(|e| panic!("failed to open device lock at {}: {e}", path.display()));
     file.lock_exclusive()

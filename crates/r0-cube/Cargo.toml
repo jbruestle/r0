@@ -7,13 +7,14 @@ publish.workspace = true
 rust-version.workspace = true
 
 [features]
-# Backend feature flags mirror r0-ntt's pattern. `cuda` is opt-in; on
-# hosts without an NVIDIA driver `cargo test --workspace` would fail
-# unhelpfully if it were on by default.
-default = ["wgpu", "cpu"]
-cuda = ["cubecl/cuda"]
+# No default backend — the user must pick one via `--features cuda` or
+# `--features wgpu`. Building without a backend is a compile error.
+default = []
+# cubecl-cuda 0.9 has an upstream bug where it fails to compile without
+# cubecl/cpu present (missing cubecl-runtime stream imports). We pull in
+# cpu silently as a workaround — users just pass `--features cuda`.
+cuda = ["cubecl/cuda", "cubecl/cpu"]
 wgpu = ["cubecl/wgpu"]
-cpu = ["cubecl/cpu"]
 
 [dependencies]
 cubecl = { workspace = true }

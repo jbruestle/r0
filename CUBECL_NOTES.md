@@ -260,5 +260,5 @@ r0-polynomial's `pair_scan.rs` uses this throughout its
   `~/.cargo/registry/src/index.crates.io-*/cubecl-core-0.9.0/src/`.
 - `cubecl-core/src/runtime_tests/` has small canonical examples for
   every primitive surface. We use these as templates.
-- Everything in this workspace's tests/cube_smoke.rs is a working
+- Everything in `crates/r0-field/tests/cube_smoke.rs` is a working
   end-to-end example you can copy.

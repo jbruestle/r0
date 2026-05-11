@@ -30,9 +30,8 @@ Out (lives elsewhere):
 - Field arithmetic and `ExtField` → `r0-field`.
 - NTT kernels → `r0-ntt`.
 - Polynomial-division and other algebra-aware recipes → `r0-polynomial`.
-- Monoid impls — they live with the type they wrap (`Sum<F>` /
-  `PairScan<F>` for field elements live in `r0-field` / `r0-polynomial`).
-  r0-cube intentionally ships none.
+- Monoid impls live with their recipe (`PairScan<F>` is in
+  `r0-polynomial`). r0-cube intentionally ships none.
 
 ## 2. `Device<R>` — lock + client + scratch
 
@@ -114,17 +113,18 @@ expand-time wiring for non-primitive `M`.
 struct (named fields, normal arithmetic) with a `CubePrimitive` wire
 format. The scan code does its mechanics in `Repr`-space and crosses
 back to `Self` only for the algebraic `combine`. For one-u32 monoids
-`Repr = u32`; for multi-word monoids `Repr = Line<u32, N>` (a cubecl
-SIMD-style vector, mapping to `vec*<u32>` on WGSL / packed `uint*` on
-CUDA).
+`Repr = u32`; for multi-word monoids `Repr = Line<u32>` (a cubecl
+SIMD-style vector — lane count is IR-side, not in the type — mapping
+to `vec*<u32>` on WGSL / packed `uint*` on CUDA).
 
 ### 3.2 Where impls live
 
 **Not in r0-cube.** Per the dep direction, monoid impls live with the
-type they wrap. `Sum<F>` / `PairScan<F>` over `r0-field` elements live
-in `r0-field` next to `Ext4` / `Ext5`; recipe-specific monoids live with
-their recipe. This crate ships only the trait shape so `r0-field` →
-`r0-cube` (not the other way) keeps the dep arrow clean.
+type they wrap. `PairScan<F>` over `r0-field` elements lives in
+`r0-polynomial`; future monoids (e.g. `Sum<F>` for FRI fold) will live
+with the recipe that needs them. This crate ships only the trait shape
+so `r0-field` → `r0-cube` (not the other way) keeps the dep arrow
+clean.
 
 ## 4. Plane- and block-level scans
 

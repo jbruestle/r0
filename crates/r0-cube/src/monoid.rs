@@ -31,9 +31,8 @@
 //! `uint*` on CUDA).
 //!
 //! Implementations live with the type the monoid wraps, not in r0-cube:
-//! `Sum<F>` and `PairScan<F>` over `r0-field` elements live alongside
-//! `Ext4` / `Ext5` in `r0-field` / `r0-polynomial`; recipe-specific monoids
-//! live with their recipe. r0-cube intentionally ships no impls — only the
+//! `PairScan<F>` lives in `r0-polynomial`; future monoids will live with
+//! their recipe crate. r0-cube intentionally ships no impls — only the
 //! shape.
 //!
 //! # One-word vs multi-word monoids

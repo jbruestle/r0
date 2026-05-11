@@ -22,7 +22,7 @@ on the same plan is ~19 µs/NTT. The 4–5× gap has at least two plausible
 contributors and we haven't separated them: (a) memory bandwidth — Apple
 unified memory ~400 GB/s vs NVIDIA discrete ~1 TB/s+, and (b) Montgomery-mul
 codegen — `mul_hi` lowers to a single `mul.hi.u32` on CUDA but is emulated
-via schoolbook split (~10 ops) on WGSL (see DESIGN.md §3). A like-for-like
+via schoolbook split (~10 ops) on WGSL (see r0-ntt README §3). A like-for-like
 run on native (non-browser) `cubecl-wgpu` on this same Mac would help
 attribute the gap.
 
