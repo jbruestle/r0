@@ -192,7 +192,8 @@ fn divide_koala_bear_4() {
 #[test]
 fn divide_baby_bear_spot() {
     let device = Device::<Runtime>::acquire();
-    cube_vs_host::<HBaseBb>(&device, 12, 2, 0xBEEF_CAFE_1234u64, "BB");
+    cube_vs_host::<HBaseBb>(&device, 1, 2, 0xBEEF_CAFE_1234u64, "BB log_n=1");
+    cube_vs_host::<HBaseBb>(&device, 12, 2, 0xBEEF_CAFE_1234u64, "BB log_n=12");
 }
 
 #[test]

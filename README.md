@@ -52,6 +52,17 @@ The feature name is the same across all default-member crates (`cuda`
 or `wgpu`). Omit `--workspace` — `r0-ntt-web` hardcodes wgpu and
 would conflict with `--features cuda`.
 
+## Benchmarks
+
+```sh
+cargo bench --features cuda -p r0-ntt
+cargo bench --features cuda -p r0-polynomial
+```
+
+Substitute `wgpu` for `cuda` on non-NVIDIA hardware.
+
+## Notes
+
 Autotune and diagnostics integration tests are gated behind `r0-ntt`'s
 `unstable-planner` feature and run only with `--ignored`.
 

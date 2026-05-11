@@ -239,13 +239,12 @@ impl<R: Runtime, Recipe: ScanRecipe> ScanExec<R, Recipe> {
         batch_count: u32,
     ) {
         let n = 1u32 << log_n;
-        let kernel_log_wg = log_n.min(self.log_wg);
+        // Always launch at least warp_size threads so that plane_shuffle_up
+        // operates on a fully-populated warp. Threads beyond n feed identity
+        // into the scan and skip the store (guarded in k_single_block).
+        let kernel_log_wg = log_n.max(self.log_warp).min(self.log_wg);
         let kernel_wg_size = 1u32 << kernel_log_wg;
-        // Cap log_warp to the actual workgroup size — if n < warp_size,
-        // we launch fewer threads than a full warp and the plane scan
-        // must not shuffle beyond the live lanes.
-        let kernel_log_warp = self.log_warp.min(kernel_log_wg);
-        let num_warps = 1u32 << (kernel_log_wg.saturating_sub(kernel_log_warp));
+        let num_warps = 1u32 << (kernel_log_wg - self.log_warp);
 
         let in_count = (input.size() / U32_BYTES) as usize;
         let out_count = (output.size() / U32_BYTES) as usize;
@@ -259,7 +258,7 @@ impl<R: Runtime, Recipe: ScanRecipe> ScanExec<R, Recipe> {
                 ArrayArg::from_raw_parts::<u32>(contexts, ctx_count, 1),
                 ArrayArg::from_raw_parts::<u32>(input, in_count, 1),
                 ArrayArg::from_raw_parts::<u32>(output, out_count, 1),
-                kernel_log_warp,
+                self.log_warp,
                 kernel_log_wg,
                 num_warps,
                 batch_count,
@@ -451,6 +450,11 @@ impl<R: Runtime, Recipe: ScanRecipe> ScanExec<R, Recipe> {
 
 /// Single-block fast path: `n <= wg_size`. One workgroup per polynomial
 /// does the whole scan with no spine.
+///
+/// When `n < warp_size`, the launch pads the workgroup to at least
+/// `warp_size` threads so `plane_shuffle_up` operates on a full warp.
+/// Threads with `UNIT_POS >= n` feed identity into the scan and skip
+/// the store.
 #[cube(launch_unchecked)]
 fn k_single_block<Recipe: ScanRecipe>(
     contexts: &Array<u32>,
@@ -467,9 +471,23 @@ fn k_single_block<Recipe: ScanRecipe>(
 
     let mut scratch = <Recipe::Monoid as Monoid>::alloc_scratch(num_warps);
 
-    let v = Recipe::load(contexts, input, batch, scan_pos, n, batch_count);
-    let scanned = block_inclusive_scan::<Recipe::Monoid>(v, &mut scratch, log_warp, log_wg);
-    Recipe::store(contexts, output, batch, scan_pos, n, batch_count, scanned);
+    // Threads beyond n feed identity so the warp shuffle is well-defined
+    // (when n < warp_size, the launch pads the workgroup to warp_size).
+    // We work in Repr-space because cubecl 0.9 can't if-else a generic
+    // CubeType — only CubePrimitive supports that.
+    let safe_pos = if scan_pos < n { scan_pos } else { 0u32.into() };
+    let loaded = Recipe::load(contexts, input, batch, safe_pos, n, batch_count);
+    let v_repr = if scan_pos < n {
+        <Recipe::Monoid as Monoid>::to_repr(loaded)
+    } else {
+        <Recipe::Monoid as Monoid>::to_repr(<Recipe::Monoid as Monoid>::identity())
+    };
+    let scanned = block_inclusive_scan::<Recipe::Monoid>(
+        <Recipe::Monoid as Monoid>::from_repr(v_repr), &mut scratch, log_warp, log_wg,
+    );
+    if scan_pos < n {
+        Recipe::store(contexts, output, batch, scan_pos, n, batch_count, scanned);
+    }
 }
 
 /// Multi-block stage 1 (recipe-aware): each level-0 block reduces, lane

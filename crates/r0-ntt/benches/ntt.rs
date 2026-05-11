@@ -18,7 +18,7 @@ fn bench_ntt<P: MontyParameters>(
 
     let device = Device::<Runtime>::acquire();
     let exec = NttExec::<P, Runtime>::new(&device);
-    let client = Runtime::client(device.inner());
+    let client = device.client();
 
     let input: Vec<u32> = (0..total as u32)
         .map(|i| r0_field::MontyField::<P>::from_canonical(i.wrapping_mul(0x9E3779B1) % P::PRIME).raw())

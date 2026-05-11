@@ -23,8 +23,9 @@ const ELEM_BYTES: usize = 4;
 ///
 /// `P` selects the field
 /// ([`BabyBearParameters`](r0_field::BabyBearParameters) or
-/// [`KoalaBearParameters`](r0_field::KoalaBearParameters)). `R` selects
-/// the cubecl runtime (`CudaRuntime`, `WgpuRuntime`, `CpuRuntime`).
+/// [`KoalaBearParameters`](r0_field::KoalaBearParameters)). `R` is the
+/// cubecl runtime, selected at compile time via `--features cuda` or
+/// `--features wgpu` (see [`r0_cube::Runtime`]).
 ///
 /// Run an NTT with [`forward`] or [`inverse`]; both pick a plan
 /// internally via the heuristic. For autotuning or fine-grained
