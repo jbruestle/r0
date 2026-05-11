@@ -100,7 +100,10 @@ fn forward_spot() {
 
 #[test]
 fn forward_batch() {
-    for batch in [1, 3, 101] {
+    // batch=19 is > sub_batch (16 on 64 MiB scratch at log_n=20) and odd,
+    // exercising sub-batch slicing with a remainder. Kept small because
+    // each batch row requires a full Plonky3 CPU oracle DFT (~2s each).
+    for batch in [1, 3, 19] {
         check_forward::<BabyBearParameters>(20, batch);
     }
 }
