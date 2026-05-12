@@ -13,24 +13,31 @@
 //! and reads the advanced value back out from the returned struct for
 //! the next subroutine in the chain.
 //!
-//! # Deviations from DESIGN.md (cubecl 0.9 limits)
+//! # cubecl 0.9 shape notes
+//!
+//! Two implementation choices below are forced by cubecl 0.9 limits;
+//! they're noted here because they shape the public API and the
+//! per-round helper structure. Both limits are catalogued in detail in
+//! the workspace `CUBECL_NOTES.md`.
 //!
 //! 1. **Value-in / value-out instead of `&mut ConstraintAccumulator`.**
 //!    cubecl 0.9 supports field assignment on `&mut <CubeType>` only when
 //!    the field type is itself a `CubePrimitive` (u32 etc.). For
 //!    CubeType-typed fields like `Ext4` it errors with a confusing
-//!    `From<…Expand>` trait bound. The
-//!    `cubetype_mut_ext_spike` test in this crate documents the failure;
-//!    the workaround used here is to take `cstate` by value and return
-//!    the updated struct, with caller chain `cstate = poseidon1_kb16_constraint(…, cstate)`.
+//!    `From<…Expand>` trait bound. The workaround used here is to take
+//!    `cstate` by value and return the updated struct, with caller chain
+//!    `cstate = poseidon1_kb16_constraint(…, cstate)`.
 //!
 //! 2. **Comptime-recursive helpers replace `for` loops over a CubeType
 //!    accumulator.** `let mut cs = …; cs = helper(cs)` reassignment of a
 //!    CubeType-with-CubeType-fields struct hits the same macro
-//!    limitation. The clean replacement is a comptime-recursive
-//!    `#[cube] fn` (`if comptime!(i >= N) { acc } else { recurse with i+1 }`)
-//!    — cubecl resolves the recursion at IR build time, generating an
-//!    inlined chain of N calls.
+//!    limitation (a `let mut` of a `CubePrimitive` like `u32` is fine —
+//!    only CubeType-with-CubeType-fields trips it). The clean
+//!    replacement is a comptime-recursive `#[cube] fn`
+//!    (`if comptime!(i >= N) { acc } else { recurse with i+1 }`) —
+//!    cubecl resolves the recursion at IR build time, generating an
+//!    inlined chain of N calls. See `full_round_chain` and
+//!    `partial_chain` below.
 
 use cubecl::prelude::*;
 

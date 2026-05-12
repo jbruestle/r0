@@ -3,8 +3,9 @@
 //! Three call modes share a common 28-round structure (4 initial full +
 //! 20 partial + 4 terminal full): pure permutation, permutation +
 //! per-S-box witness write, and per-row constraint contribution into a
-//! fiat-shamir-mixed accumulator. See `DESIGN.md` for the full design;
-//! this is the public surface as the crate fills in.
+//! fiat-shamir-mixed accumulator. Bit-for-bit compatible with Plonky3's
+//! `default_koalabear_poseidon1_16`. See the crate README for the full
+//! design and the rustdoc on each item below for usage.
 
 mod host_ref;
 pub use host_ref::{

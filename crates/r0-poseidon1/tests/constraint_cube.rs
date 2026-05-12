@@ -223,11 +223,21 @@ fn flipped_witness_yields_nonzero_accumulator() {
     let client = device.client();
 
     let (ins, mut wits) = build_inputs_and_witnesses();
-    // Flip column 42 (a partial-round sbox value) for thread 0.
-    {
-        let raw = wits[0][42].raw();
-        let flipped = raw ^ 1; // Toggle low bit; still < p.
-        wits[0][42] = KoalaBear::from_raw(flipped);
+    // Flip one column per thread, picking columns from each of the three
+    // round phases so a regression that only affects (e.g.) terminal-full
+    // mixing can't sneak past. Thread 1 stays clean as the
+    // valid-witness-still-passes control.
+    //   thread 0: col 42  — initial-full slot (cols 0..63)
+    //   thread 1: clean   — control: zero acc expected
+    //   thread 2: col 70  — partial-round slot (cols 64..83)
+    //   thread 3: col 100 — terminal-full slot (cols 84..147)
+    let flip_col_per_thread: [Option<usize>; N_THREADS as usize] =
+        [Some(42), None, Some(70), Some(100)];
+    for (t, col) in flip_col_per_thread.iter().enumerate() {
+        if let Some(c) = col {
+            let raw = wits[t][*c].raw();
+            wits[t][*c] = KoalaBear::from_raw(raw ^ 1); // toggle low bit; still < p
+        }
     }
     let inputs_buf = pack_inputs(&ins);
     let witness_buf = pack_witnesses(&wits, N_THREADS);
@@ -237,27 +247,24 @@ fn flipped_witness_yields_nonzero_accumulator() {
 
     let out = run_cube(client, &inputs_buf, &witness_buf, N_THREADS, alpha, alpha_pow_init);
 
-    // Thread 0 (flipped) should have non-zero acc.
-    let acc0 = Ext4::<KoalaBear4Parameters>::from_raw([out[0], out[1], out[2], out[3]]);
-    assert_ne!(
-        acc0.to_canonical(),
-        [0, 0, 0, 0],
-        "thread 0 (flipped witness) produced zero acc — flip not detected"
-    );
-
-    // Other threads should still be zero.
-    for t in 1..N_THREADS as usize {
+    for (t, col) in flip_col_per_thread.iter().enumerate() {
         let acc = Ext4::<KoalaBear4Parameters>::from_raw([
-            out[t * 8 + 0],
+            out[t * 8],
             out[t * 8 + 1],
             out[t * 8 + 2],
             out[t * 8 + 3],
         ]);
-        assert_eq!(
-            acc.to_canonical(),
-            [0, 0, 0, 0],
-            "thread {t} (unmodified witness) should have zero acc"
-        );
+        let canon = acc.to_canonical();
+        match col {
+            Some(c) => assert_ne!(
+                canon, [0, 0, 0, 0],
+                "thread {t} (flipped col {c}) produced zero acc — flip not detected"
+            ),
+            None => assert_eq!(
+                canon, [0, 0, 0, 0],
+                "thread {t} (clean witness) should have zero acc, got {canon:?}"
+            ),
+        }
     }
 }
 

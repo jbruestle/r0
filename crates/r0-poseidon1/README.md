@@ -91,11 +91,12 @@ per-S-box call site (~5 lines per variant inside per-round helpers).
 ## 4. State representation
 
 Per-thread 16-element working set lives in `Array::<u32>::new(16)`
-allocated inside the `#[cube] fn`. Verified by the spike at
-[`r0-cube/tests/array16_spike.rs`](../r0-cube/tests/array16_spike.rs):
-lowers to `var a_0: array<u32, 16>` in WGSL with all indices
-comptime-resolved, which downstream compilers (Naga → Metal/SPIR-V)
-scalarize into register file.
+allocated inside the `#[cube] fn`. This lowers to `var a_0: array<u32,
+16>` in WGSL with all indices comptime-resolved, which downstream
+compilers (Naga → Metal/SPIR-V) scalarize into the register file. See
+the `Array<u32>` notes in the workspace
+[`CUBECL_NOTES.md`](../../CUBECL_NOTES.md) for the cubecl-side
+mechanics.
 
 Caller composition: the caller allocates its own `Array::<u32>::new(16)`,
 fills it from wherever (input buffer, prior permutation output,
@@ -294,13 +295,12 @@ testable backend) and all pass.
 | `tests/mds.rs` | 2 | FFT MDS == naive on 32 random + e_0 → MDS column |
 | `tests/permute_cube.rs` | 2 | cube compute matches host on oracle + 32 random |
 | `tests/witgen_cube.rs` | 1 | cube witgen outputs + 148 sbox cols match host trace |
-| `tests/constraint_cube.rs` | 3 | valid → 0; flipped → ≠0; cube == host shadow |
+| `tests/constraint_cube.rs` | 3 | valid → 0; per-phase flipped → ≠0 (initial-full + partial + terminal-full); cube == host shadow |
 
-Plus two cubecl-pattern probe spikes at
-`tests/cubetype_mut_ext_spike.rs` (this crate) and
-[`r0-cube/tests/array16_spike.rs`](../r0-cube/tests/array16_spike.rs) /
-[`r0-cube/tests/cubetype_mut_spike.rs`](../r0-cube/tests/cubetype_mut_spike.rs)
-documenting the cubecl 0.9 limits that shaped this crate's API.
+The `flipped → ≠0` check picks one column from each of the three round
+phases on different threads (plus a clean control thread), so a
+regression that only affects e.g. terminal-full constraint mixing can't
+hide behind one of the other two.
 
 CPU runtime is not exercised: cubecl's CPU emulator reports
 `plane_size = 1` which the rest of the workspace's tests already work
@@ -333,38 +333,37 @@ constraint perf becomes critical.
 CUDA / sppark numbers TBD — `r0-poseidon1` builds against `--features cuda`
 identically; benches just need an NVIDIA host.
 
-## 12. Deviations from DESIGN.md
+## 12. cubecl 0.9 shape notes
 
-The shipped implementation differs from
-the original `DESIGN.md` (replaced by this README) in two places. Both
-are workarounds for cubecl 0.9 constraints that surfaced during
-implementation; documented here so the diff is first-class.
+Two implementation choices below are forced by cubecl 0.9 limits.
+They're noted because they shape the public API and the per-round
+helper structure; the workspace
+[`CUBECL_NOTES.md`](../../CUBECL_NOTES.md) catalogues these and the
+related quirks at the level of cubecl mechanics.
 
 1. **Constraint subroutine takes `cstate` by value and returns it,
    instead of `&mut ConstraintAccumulator`.** cubecl 0.9 supports
    field assignment on `&mut <CubeType>` only when the field type is
    itself a `CubePrimitive` (u32 etc.). For CubeType-typed fields like
    `Ext4` the macro errors with `From<…Expand>` trait-bound failures
-   referencing unrelated cubecl primitives. The
-   [`tests/cubetype_mut_ext_spike.rs`](tests/cubetype_mut_ext_spike.rs)
-   probe documents this. Caller pattern:
+   referencing unrelated cubecl primitives. Caller pattern:
    `let cstate = poseidon1_kb16_constraint(…, cstate);` — one extra
-   reassignment per call vs the originally-planned `&mut`. Functionally
-   equivalent; mutation through nested helper calls works the same.
+   reassignment per call vs `&mut`. Functionally equivalent; mutation
+   through nested helper calls works the same.
 
 2. **Per-round S-box chains use comptime-recursive `#[cube] fn`s
    instead of `for ... { cs = helper(cs) }` reassignment.** Same
    underlying limitation: `let mut cs: ConstraintAccumulator = …; cs =
-   …;` reassignment also doesn't work for CubeType-with-CubeType-fields.
-   The shipped pattern is `if comptime!(i >= N) { cs } else { let cs =
-   step(cs); recurse(cs, comptime!(i + 1)) }`. cubecl resolves the
-   recursion at IR build time, generating an inlined chain of N calls.
-   Spike-verified pattern. See `full_round_chain` and `partial_chain`
-   in [`src/constraint.rs`](src/constraint.rs).
+   …;` reassignment also doesn't work for CubeType-with-CubeType-fields
+   (a `let mut` of a `CubePrimitive` like `u32` is fine — only
+   CubeType-with-CubeType-fields trips it). The shipped pattern is
+   `if comptime!(i >= N) { cs } else { let cs = step(cs); recurse(cs,
+   comptime!(i + 1)) }`. cubecl resolves the recursion at IR build
+   time, generating an inlined chain of N calls. See `full_round_chain`
+   and `partial_chain` in [`src/constraint.rs`](src/constraint.rs).
 
-Neither deviation changes the public API meaningfully — point 1 means
-caller writes `cstate = f(…, cstate)` instead of `f(…, &mut cstate)`,
-point 2 is purely internal.
+Point 1 means the caller writes `cstate = f(…, cstate)` instead of
+`f(…, &mut cstate)`. Point 2 is purely internal.
 
 ## 13. File layout
 
@@ -385,8 +384,7 @@ tests/
   mds.rs                        -- FFT MDS == naive
   permute_cube.rs               -- cube compute on oracle + random batch
   witgen_cube.rs                -- cube witgen sbox-by-sbox vs host trace
-  constraint_cube.rs            -- valid → 0; flipped → ≠0; cube == host
-  cubetype_mut_ext_spike.rs     -- cubecl 0.9 probe (documented limitation)
+  constraint_cube.rs            -- valid → 0; flipped → ≠0 across phases; cube == host
 ```
 
 ## 14. Crate dep direction
