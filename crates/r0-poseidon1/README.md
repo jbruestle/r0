@@ -307,7 +307,33 @@ CPU runtime is not exercised: cubecl's CPU emulator reports
 around; we don't add it back here unless we hit a wgpu-only codegen
 issue.
 
-## 11. Deviations from DESIGN.md
+## 11. Performance (Mac wgpu, M-series)
+
+Throughput at 2^18 perms (criterion median, `cargo bench --features wgpu -p r0-poseidon1`):
+
+| Mode | Time / call | Per-perm | Estimated muls/perm |
+|---|---|---|---|
+| permute    | 2.08 ms | 7.9 ns  | ~1780 |
+| witgen     | 2.17 ms | 8.3 ns  | ~1780 (+ 148 cached writes) |
+| constraint | 5.85 ms | 22.3 ns | ~5330 |
+
+Mul-count breakdown (per perm):
+
+- **Permute** ≈ 400 (8 × FFT MDS) + 256 (8 × 16 cubes) + 40 (20 partial cubes) + 510 (partial dot products) + 576 (state recovery) = **~1780**.
+- **Witgen** = same muls, +148 transposed writes (~5% measured overhead — basically free, confirming compute-bound).
+- **Constraint** ≈ 400 (MDS, same) + 8·16·26 + 20·26 (per-S-box: 2 cube + 4 lift-mul + 20 α-update) + 510 + 576 = **~5330**.
+
+The constraint/permute ratio (~2.81× measured vs ~2.99× predicted) confirms
+the WGSL compiler folds the literal-zero limbs in `lift(diff) = (diff, 0, 0, 0)`
+from a full 20-mul `ext4_mul` down to ~4 muls. The remaining bottleneck is
+`alpha_pow *= alpha` at every S-box (20 muls × 148 = ~56% of constraint
+total). Skippable via a 148-element precomputed α-power table if
+constraint perf becomes critical.
+
+CUDA / sppark numbers TBD — `r0-poseidon1` builds against `--features cuda`
+identically; benches just need an NVIDIA host.
+
+## 12. Deviations from DESIGN.md
 
 The shipped implementation differs from
 the original `DESIGN.md` (replaced by this README) in two places. Both
@@ -340,7 +366,7 @@ Neither deviation changes the public API meaningfully — point 1 means
 caller writes `cstate = f(…, cstate)` instead of `f(…, &mut cstate)`,
 point 2 is purely internal.
 
-## 12. File layout
+## 13. File layout
 
 ```
 src/
@@ -363,7 +389,7 @@ tests/
   cubetype_mut_ext_spike.rs     -- cubecl 0.9 probe (documented limitation)
 ```
 
-## 13. Crate dep direction
+## 14. Crate dep direction
 
 ```
 r0-poseidon1 — → r0-field, r0-cube, cubecl
@@ -372,7 +398,7 @@ r0-poseidon1 — → r0-field, r0-cube, cubecl
 Sibling to r0-polynomial. Single backend feature flag (`cuda` or
 `wgpu`), forwarded through `r0-cube`.
 
-## 14. Future work (deferred)
+## 15. Future work (deferred)
 
 - **Pure-Ext4 host verifier** for the OOD-evaluation case (input/witness
   in KB^4 throughout). Trivial variant of `host_constraint_kb_witness`;
