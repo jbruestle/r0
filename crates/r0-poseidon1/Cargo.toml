@@ -16,3 +16,11 @@ r0-cube = { path = "../r0-cube" }
 r0-field = { path = "../r0-field" }
 cubecl = { workspace = true }
 cubecl-core = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+cubecl-common = { workspace = true }
+
+[[bench]]
+name = "poseidon1"
+harness = false

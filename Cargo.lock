@@ -2689,7 +2689,9 @@ dependencies = [
 name = "r0-poseidon1"
 version = "0.0.0"
 dependencies = [
+ "criterion",
  "cubecl",
+ "cubecl-common",
  "cubecl-core",
  "r0-cube",
  "r0-field",
