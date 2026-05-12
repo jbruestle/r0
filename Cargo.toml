@@ -6,12 +6,14 @@ members = [
     "crates/r0-ntt",
     "crates/r0-ntt-web",
     "crates/r0-polynomial",
+    "crates/r0-poseidon1",
 ]
 default-members = [
     "crates/r0-cube",
     "crates/r0-field",
     "crates/r0-ntt",
     "crates/r0-polynomial",
+    "crates/r0-poseidon1",
 ]
 
 [workspace.package]

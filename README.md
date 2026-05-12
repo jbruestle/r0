@@ -26,6 +26,11 @@ CUDA, wgpu (Vulkan/Metal/WebGPU), and CPU.
   Currently division by `(x − z)`; future work includes evaluation,
   FRI fold, and OOD evaluation. See
   [the crate README](crates/r0-polynomial/README.md) for design.
+- [`r0-poseidon1`](crates/r0-poseidon1) — Poseidon1 permutation over
+  KoalaBear, width 16, as `#[cube]` subroutines. Three call modes
+  (compute, witness-write, constraint contribution) sharing a common
+  28-round structure. Plonky3-compatible. See
+  [the crate README](crates/r0-poseidon1/README.md) for design.
 - [`r0-ntt-web`](crates/r0-ntt-web) — browser WebGPU benchmark demo
   for `r0-ntt`.
 

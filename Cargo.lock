@@ -2261,6 +2261,9 @@ name = "p3-maybe-rayon"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "082bf467011c06c768c579ec6eb9accb5e1e62108891634cc770396e917f978a"
+dependencies = [
+ "rayon",
+]
 
 [[package]]
 name = "p3-mds"
@@ -2677,6 +2680,16 @@ dependencies = [
  "criterion",
  "cubecl",
  "cubecl-common",
+ "cubecl-core",
+ "r0-cube",
+ "r0-field",
+]
+
+[[package]]
+name = "r0-poseidon1"
+version = "0.0.0"
+dependencies = [
+ "cubecl",
  "cubecl-core",
  "r0-cube",
  "r0-field",
